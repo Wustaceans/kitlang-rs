@@ -44,13 +44,7 @@ pub fn postfix(tok: &Tok) -> Option<u8> {
 /// Prefix (unary) binding power. Returns None for non-prefix tokens.
 pub fn prefix(tok: &Tok) -> Option<u8> {
     match tok {
-        Tok::Bang
-        | Tok::Minus
-        | Tok::Star
-        | Tok::Amp
-        | Tok::Tilde
-        | Tok::PlusPlus
-        | Tok::MinusMinus => Some(25),
+        Tok::Bang | Tok::Minus | Tok::Star | Tok::Amp | Tok::Tilde => Some(25),
         _ => None,
     }
 }

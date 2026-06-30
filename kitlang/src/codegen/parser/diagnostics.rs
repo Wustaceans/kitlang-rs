@@ -27,7 +27,6 @@ use crate::lexer::Tok;
 /// "expected one of: ..." with no extra work. Today, [`to_human_message`]
 /// joins these into a string for `CompilationError::ParseError`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // variants will be constructed by diagnostic work in a follow-up
 pub(crate) enum ExprParseError {
     /// A token was found where it was not expected.
     UnexpectedToken {
@@ -77,79 +76,85 @@ impl fmt::Display for ExprParseError {
     }
 }
 
-/// Map a `Tok` kind to a short human-readable name for error messages.
+/// Map a `Tok` kind to a short human-readable token name, as a static
+/// slice of one element. Returns `&'static [&'static str]` for direct
+/// use in `ExprParseError::UnexpectedToken.expected`.
 ///
-/// Returns `'static` strings so `ExprParseError` can carry them as
-/// `&'static [&'static str]` without allocation. Used by the binding-power
-/// helpers in `expr_pratt.rs` to populate the `expected` list.
-#[allow(dead_code)] // seam: will be called from diagnostic work in a follow-up
-pub(crate) fn tok_name(kind: &Tok) -> &'static str {
+/// This is the single canonical match for all token → name mappings.
+/// [`tok_name`] is a zero-cost wrapper that extracts the first element.
+pub(crate) fn expected_name(kind: &Tok) -> &'static [&'static str] {
     match kind {
-        Tok::LParen => "`(`",
-        Tok::RParen => "`)`",
-        Tok::LBracket => "`[`",
-        Tok::RBracket => "`]`",
-        Tok::LBrace => "`{`",
-        Tok::RBrace => "`}`",
-        Tok::Comma => "`,`",
-        Tok::Semi => "`;`",
-        Tok::Dot => "`.`",
-        Tok::Colon => "`:`",
-        Tok::Ellipsis => "`...`",
-        Tok::Plus => "`+`",
-        Tok::Minus => "`-`",
-        Tok::Star => "`*`",
-        Tok::Slash => "`/`",
-        Tok::Percent => "`%`",
-        Tok::EqEq => "`==`",
-        Tok::NotEq => "`!=`",
-        Tok::LtEq => "`<=`",
-        Tok::GtEq => "`>=`",
-        Tok::Lt => "`<`",
-        Tok::Gt => "`>`",
-        Tok::AndAnd => "`&&`",
-        Tok::OrOr => "`||`",
-        Tok::Bang => "`!`",
-        Tok::Amp => "`&`",
-        Tok::Pipe => "`|`",
-        Tok::Caret => "`^`",
-        Tok::Tilde => "`~`",
-        Tok::Shl => "`<<`",
-        Tok::Shr => "`>>`",
-        Tok::PlusPlus => "`++`",
-        Tok::MinusMinus => "`--`",
-        Tok::ShlEq => "`<<=`",
-        Tok::ShrEq => "`>>=`",
-        Tok::PlusEq => "`+=`",
-        Tok::MinusEq => "`-=`",
-        Tok::StarEq => "`*=`",
-        Tok::SlashEq => "`/=`",
-        Tok::PercentEq => "`%=`",
-        Tok::AmpEq => "`&=`",
-        Tok::PipeEq => "`|=`",
-        Tok::CaretEq => "`^=`",
-        Tok::Assign => "`=`",
-        Tok::KwIf => "`if`",
-        Tok::KwThen => "`then`",
-        Tok::KwElse => "`else`",
-        Tok::KwTrue => "`true`",
-        Tok::KwFalse => "`false`",
-        Tok::KwNull => "`null`",
-        Tok::KwThis => "`this`",
-        Tok::KwSelf => "`Self`",
-        Tok::KwSizeof => "`sizeof`",
-        Tok::KwDefined => "`defined`",
-        Tok::KwUnsafe => "`unsafe`",
-        Tok::KwStatic => "`static`",
-        Tok::KwImplicit => "`implicit`",
-        Tok::KwEmpty => "`empty`",
-        Tok::KwStruct => "`struct`",
-        Tok::IntLit(_) => "integer literal",
-        Tok::FloatLit(_) => "float literal",
-        Tok::CharLit(_) => "char literal",
-        Tok::StringLit(_) => "string literal",
-        Tok::Ident(_) => "identifier",
+        Tok::LParen => &["`(`"],
+        Tok::RParen => &["`)`"],
+        Tok::LBracket => &["`[`"],
+        Tok::RBracket => &["`]`"],
+        Tok::LBrace => &["`{`"],
+        Tok::RBrace => &["`}`"],
+        Tok::Comma => &["`,`"],
+        Tok::Semi => &["`;`"],
+        Tok::Dot => &["`.`"],
+        Tok::Colon => &["`:`"],
+        Tok::Ellipsis => &["`...`"],
+        Tok::Plus => &["`+`"],
+        Tok::Minus => &["`-`"],
+        Tok::Star => &["`*`"],
+        Tok::Slash => &["`/`"],
+        Tok::Percent => &["`%`"],
+        Tok::EqEq => &["`==`"],
+        Tok::NotEq => &["`!=`"],
+        Tok::LtEq => &["`<=`"],
+        Tok::GtEq => &["`>=`"],
+        Tok::Lt => &["`<`"],
+        Tok::Gt => &["`>`"],
+        Tok::AndAnd => &["`&&`"],
+        Tok::OrOr => &["`||`"],
+        Tok::Bang => &["`!`"],
+        Tok::Amp => &["`&`"],
+        Tok::Pipe => &["`|`"],
+        Tok::Caret => &["`^`"],
+        Tok::Tilde => &["`~`"],
+        Tok::Shl => &["`<<`"],
+        Tok::Shr => &["`>>`"],
+        Tok::PlusPlus => &["`++`"],
+        Tok::MinusMinus => &["`--`"],
+        Tok::ShlEq => &["`<<=`"],
+        Tok::ShrEq => &["`>>=`"],
+        Tok::PlusEq => &["`+=`"],
+        Tok::MinusEq => &["`-=`"],
+        Tok::StarEq => &["`*=`"],
+        Tok::SlashEq => &["`/=`"],
+        Tok::PercentEq => &["`%=`"],
+        Tok::AmpEq => &["`&=`"],
+        Tok::PipeEq => &["`|=`"],
+        Tok::CaretEq => &["`^=`"],
+        Tok::Assign => &["`=`"],
+        Tok::KwIf => &["`if`"],
+        Tok::KwThen => &["`then`"],
+        Tok::KwElse => &["`else`"],
+        Tok::KwTrue => &["`true`"],
+        Tok::KwFalse => &["`false`"],
+        Tok::KwNull => &["`null`"],
+        Tok::KwThis => &["`this`"],
+        Tok::KwSelf => &["`Self`"],
+        Tok::KwSizeof => &["`sizeof`"],
+        Tok::KwDefined => &["`defined`"],
+        Tok::KwUnsafe => &["`unsafe`"],
+        Tok::KwStatic => &["`static`"],
+        Tok::KwImplicit => &["`implicit`"],
+        Tok::KwEmpty => &["`empty`"],
+        Tok::KwStruct => &["`struct`"],
+        Tok::IntLit(_) => &["integer literal"],
+        Tok::FloatLit(_) => &["float literal"],
+        Tok::CharLit(_) => &["char literal"],
+        Tok::StringLit(_) => &["string literal"],
+        Tok::Ident(_) => &["identifier"],
     }
+}
+
+/// Map a `Tok` kind to a short human-readable name for error messages.
+/// Zero-cost wrapper around [`expected_name`].
+pub(crate) fn tok_name(kind: &Tok) -> &'static str {
+    expected_name(kind)[0]
 }
 
 #[cfg(test)]
