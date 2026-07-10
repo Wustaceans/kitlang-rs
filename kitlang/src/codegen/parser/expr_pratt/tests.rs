@@ -500,3 +500,111 @@ fn missing_field_name() {
 fn missing_else() {
     p_err("if a then b", "`else`");
 }
+
+#[test]
+fn trailing_tokens_produce_error() {
+    p_err("a b", "end of expression");
+}
+
+#[test]
+fn unrecognized_characters_produce_error() {
+    let err = parse_kit_expr("a $ b").err().expect("should error on $");
+    let msg = err.to_human_message();
+    assert!(msg.contains("unexpected character"), "msg: {msg}");
+}
+
+#[test]
+fn integer_overflow_is_detected() {
+    let err = parse_kit_expr("99999999999999999999")
+        .err()
+        .expect("should error on overflow literal");
+    let msg = err.to_human_message();
+    assert!(
+        msg.contains("out of range"),
+        "expected 'out of range', got: {msg}"
+    );
+}
+
+#[test]
+fn integer_overflow_as_left_operand_is_detected() {
+    let err = parse_kit_expr("99999999999999999999 + 1")
+        .err()
+        .expect("should error on overflow literal");
+    let msg = err.to_human_message();
+    assert!(
+        msg.contains("out of range"),
+        "expected 'out of range', got: {msg}"
+    );
+}
+
+#[test]
+fn integer_overflow_as_right_operand_is_detected() {
+    let err = parse_kit_expr("1 + 99999999999999999999")
+        .err()
+        .expect("should error on overflow literal");
+    let msg = err.to_human_message();
+    assert!(
+        msg.contains("out of range"),
+        "expected 'out of range', got: {msg}"
+    );
+}
+
+#[test]
+fn eof_uses_unexpected_eof_not_semi() {
+    let err = parse_kit_expr("(1 + 2")
+        .err()
+        .expect("should error on missing )");
+    let msg = err.to_human_message();
+    assert!(
+        msg.contains("end of expression"),
+        "expected 'end of expression', got: {msg}"
+    );
+    // Also verify the existing test still works:
+    let missing_rparen = parse_kit_expr("(1 + 2").err().unwrap();
+    assert!(missing_rparen.to_human_message().contains("`)`"));
+}
+
+#[test]
+fn indirect_call_errors_cleanly() {
+    let err = parse_kit_expr("f()()")
+        .err()
+        .expect("should error on indirect call");
+    let msg = err.to_human_message();
+    assert!(
+        msg.contains("indirect calls"),
+        "expected 'indirect calls' error, got: {msg}"
+    );
+}
+
+#[test]
+fn postfix_increment_is_now_an_error() {
+    let err = parse_kit_expr("x++")
+        .err()
+        .expect("should error on trailing ++");
+    let msg = err.to_human_message();
+    assert!(
+        msg.contains("PlusPlus") || msg.contains("end of expression"),
+        "msg: {msg}"
+    );
+}
+
+#[test]
+fn postfix_decrement_is_now_an_error() {
+    let err = parse_kit_expr("x--")
+        .err()
+        .expect("should error on trailing --");
+    let msg = err.to_human_message();
+    assert!(
+        msg.contains("MinusMinus") || msg.contains("end of expression"),
+        "msg: {msg}"
+    );
+}
+
+#[test]
+fn sizeof_is_not_supported() {
+    let err = parse_kit_expr("sizeof(i32)")
+        .err()
+        .expect("sizeof should error");
+    let msg = err.to_human_message();
+    assert!(msg.contains("Sizeof"), "msg: {msg}");
+}

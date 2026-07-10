@@ -3,15 +3,17 @@
 //! This module takes over expression parsing from the pest-based grammar.
 //! Pest still handles the program, declaration, statement, and type-annotation
 //! grammars. For every `Pair<'_, Rule>` whose rule is an expression (i.e.,
-//! the 13 precedence levels `expr → assign → logical_or → ... → primary`),
+//! the 13 precedence levels `expr -> assign -> logical_or -> ... -> primary`),
 //! the parser hands off to [`ExprParser::parse_expr`].
 //!
 //! Pratt Parsing & Operator Precedence
 //! -----------------------------------
 //! The pest grammar used 13 mutually recursive functions (one per precedence
 //! level), which overflowed the default 1 MB stack on Windows. The Pratt
-//! parser uses a single function with a binding-power loop, bounding stack
-//! depth to `O(precedence levels) = O(13)` regardless of expression length.
+//! parser uses a single function with a binding-power loop, dramatically
+//! reducing recursive depth compared to the old 13-level grammar chain.
+//! Parenthesized sub-expressions still recurse through `parse_primary`
+//! and `parse_expr`, so stack depth is `O(parenthetical nesting)`.
 //! Operator precedence is defined in [`binding_power::infix`],
 //! [`binding_power::postfix`], [`binding_power::prefix`]. Each infix operator
 //! has a (lbp, rbp) pair: `lbp < rbp` = right-associative (assignment),
@@ -29,7 +31,7 @@
 use crate::codegen::ast::{Expr, Literal};
 use crate::codegen::type_ast::FieldInit;
 use crate::codegen::types::{Type, TypeId};
-use crate::lexer::{Span, SpannedTok, Tok, tokenize};
+use crate::lexer::{LexicalError, Span, SpannedTok, Tok, tokenize};
 
 use super::binding_power::{
     infix, is_range_op, postfix, prefix, tok_to_assign_op, tok_to_binary_op, tok_to_unary_op,
@@ -57,8 +59,8 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Entry point. Parses one complete expression and returns it.
-    /// The expression may be followed by trailing tokens, which are left
-    /// in the stream (the caller can `pos()`-check or re-parse).
+    /// Callers must check `pos()` against the token length to ensure
+    /// no trailing tokens were left unparsed.
     pub(crate) fn parse_expr(&mut self) -> Result<Expr, ExprParseError> {
         self.parse_pratt(0)
     }
@@ -162,21 +164,23 @@ impl<'a> ExprParser<'a> {
         }
 
         // Assignment (right-associative, lowest precedence).
+        // Right-associativity requires the RHS to be parsed at the same
+        // binding power as the operator's lbp, so `a = b = c` becomes
+        // `a = (b = c)`. We use `lbp` (not `rbp` from the table) since
+        // assignment needs `rbp <= lbp` for the RHS to see the operator.
         loop {
             let kind = self.peek().kind.clone();
             let Some(op) = tok_to_assign_op(&kind) else {
                 break;
             };
-            // Assignment has the lowest precedence (lbp=0, rbp=1 in the
-            // infix table, but we don't use that table here). Right-
-            // associativity: a = b = c means a = (b = c). Recurse with
-            // min_bp=0 so the rhs sees *all* operators including another
-            // assignment.
-            if 0 < min_bp {
+            let Some((lbp, _rbp)) = infix(&kind) else {
+                break;
+            };
+            if lbp < min_bp {
                 break;
             }
             self.advance();
-            let rhs = self.parse_pratt(0)?;
+            let rhs = self.parse_pratt(lbp)?;
             lhs = Expr::Assign {
                 op,
                 left: Box::new(lhs),
@@ -191,11 +195,16 @@ impl<'a> ExprParser<'a> {
     // --- Helpers ---
 
     /// Consume the current token if it matches `expected`, otherwise
-    /// return an `UnexpectedToken` error with `expected`'s name.
+    /// return an `UnexpectedToken` (or `UnexpectedEof` if at end) error
+    /// with `expected`'s name.
     fn expect(&mut self, expected: &Tok) -> Result<(), ExprParseError> {
         if &self.peek().kind == expected {
             self.advance();
             Ok(())
+        } else if self.at_eof() {
+            Err(ExprParseError::UnexpectedEof {
+                expected: expected_name(expected),
+            })
         } else {
             Err(ExprParseError::UnexpectedToken {
                 found: self.peek().kind.clone(),
@@ -236,21 +245,24 @@ impl<'a> ExprParser<'a> {
 /// For `Expr::Identifier { name, .. }` this is just `name`.
 /// For `Expr::FieldAccess { expr, field_name, .. }` chains like
 /// `pkg.math.add`, this concatenates the path with `.`.
-/// For other expressions (e.g. a parenthesized call), we fall back to
-/// `Display`-formatting the expression, which the transpiler can still
-/// route through name resolution.
-fn expr_to_callee_name(expr: &Expr) -> String {
+/// Rejects non-trivial call targets (e.g. calling the result of another
+/// call) with an error.
+fn expr_to_callee_name(expr: &Expr) -> Result<String, ExprParseError> {
     match expr {
-        Expr::Identifier { name, .. } => name.clone(),
+        Expr::Identifier { name, .. } => Ok(name.clone()),
         Expr::FieldAccess {
             expr: base,
             field_name,
             ..
         } => {
-            let base_name = expr_to_callee_name(base);
-            format!("{base_name}.{field_name}")
+            let base_name = expr_to_callee_name(base)?;
+            Ok(format!("{base_name}.{field_name}"))
         }
-        other => format!("{other:?}"),
+        _ => Err(ExprParseError::Custom(
+            "indirect calls (calling the result of another expression) \
+             are not supported by the Kit compiler"
+                .into(),
+        )),
     }
 }
 
@@ -264,10 +276,35 @@ fn expr_to_callee_name(expr: &Expr) -> String {
 /// The `text` should be the source text of the expression as a
 /// `Pair::as_str()` slice. Tokenization, parsing, and conversion to an
 /// `Expr` all happen here.
+///
+/// Errors are returned for:
+/// - Unrecognized characters in the source
+/// - Integer literals that overflow `i64`
+/// - Trailing tokens after the expression
+/// - Any parse error from the Pratt loop
 pub(crate) fn parse_kit_expr(text: &str) -> Result<Expr, ExprParseError> {
-    let tokens = tokenize(text);
+    let tokens = tokenize(text).map_err(|e| match e {
+        LexicalError::UnexpectedCharacter { offset } => {
+            ExprParseError::Custom(format!("unexpected character at byte offset {}", offset))
+        }
+        LexicalError::IntegerOverflow { text, .. } => {
+            ExprParseError::Custom(format!("integer literal `{text}` is out of range for i64"))
+        }
+    })?;
+
     let mut parser = ExprParser::new(&tokens);
-    parser.parse_expr()
+    let expr = parser.parse_expr()?;
+
+    // Reject leftover tokens (e.g. from a stray character that was dropped
+    // or from genuinely malformed input like `a b`).
+    if parser.pos() < tokens.len() {
+        return Err(ExprParseError::UnexpectedToken {
+            found: tokens[parser.pos()].kind.clone(),
+            expected: &["end of expression"],
+        });
+    }
+
+    Ok(expr)
 }
 
 // ---------------------------------------------------------------------------

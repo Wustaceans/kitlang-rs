@@ -259,14 +259,43 @@ fn unescape_str(s: &str) -> String {
     out
 }
 
-/// Tokenize source into `Vec<SpannedTok>`. Drops whitespace, comments,
-/// and unrecognized characters. Returns tokens in source order; EOF is
-/// end of vector.
-pub fn tokenize(source: &str) -> Vec<SpannedTok> {
-    Tok::lexer(source)
-        .spanned()
-        .filter_map(|(res, span)| res.ok().map(|kind| SpannedTok { kind, span }))
-        .collect()
+/// A lexical error encountered during tokenization.
+#[derive(Debug, Clone)]
+pub enum LexicalError {
+    /// An unrecognized character that matches no token pattern.
+    UnexpectedCharacter { offset: usize },
+    /// An integer literal that overflows `i64`.
+    IntegerOverflow {
+        text: String,
+        #[allow(dead_code)]
+        offset: usize,
+    },
+}
+
+/// Tokenize source into `Vec<SpannedTok>`. Returns an error on the first
+/// unrecognized character or overflowed literal. Whitespace and comments
+/// are skipped silently.
+pub fn tokenize(source: &str) -> Result<Vec<SpannedTok>, LexicalError> {
+    let mut tokens = Vec::new();
+    for (res, span) in Tok::lexer(source).spanned() {
+        match res {
+            Ok(kind) => tokens.push(SpannedTok { kind, span }),
+            Err(()) => {
+                // Logos produces Err when either no regex matches OR a callback
+                // returns None (e.g. parse_int on overflow). Distinguish by
+                // checking if the rejected span is all digits.
+                let rejected = &source[span.clone()];
+                if rejected.chars().all(|c| c.is_ascii_digit()) {
+                    return Err(LexicalError::IntegerOverflow {
+                        text: rejected.to_string(),
+                        offset: span.start,
+                    });
+                }
+                return Err(LexicalError::UnexpectedCharacter { offset: span.start });
+            }
+        }
+    }
+    Ok(tokens)
 }
 
 #[cfg(test)]
@@ -274,7 +303,11 @@ mod tests {
     use super::*;
 
     fn kinds(source: &str) -> Vec<Tok> {
-        tokenize(source).into_iter().map(|t| t.kind).collect()
+        tokenize(source)
+            .unwrap_or_else(|e| panic!("tokenize failed for `{source}`: {e:?}"))
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
     }
 
     #[test]
@@ -357,7 +390,7 @@ mod tests {
 
     #[test]
     fn spans_are_byte_accurate() {
-        let toks = tokenize("  a + b  ");
+        let toks = tokenize("  a + b  ").unwrap();
         assert_eq!(toks[0].span, 2..3); // 'a'
         assert_eq!(toks[1].span, 4..5); // '+'
         assert_eq!(toks[2].span, 6..7); // 'b'
@@ -365,17 +398,42 @@ mod tests {
 
     #[test]
     fn empty_source_produces_no_tokens() {
-        assert!(tokenize("").is_empty());
+        assert!(tokenize("").unwrap().is_empty());
     }
 
     #[test]
-    fn unknown_characters_are_dropped() {
-        // `$` is not a Kit token; the lexer drops it. This mirrors how pest
-        // would surface the error at the grammar level, which is upstream
-        // of the Pratt parser and not its concern.
-        assert_eq!(
-            kinds("a $ b"),
-            vec![Tok::Ident("a".to_string()), Tok::Ident("b".to_string()),]
+    fn unknown_characters_are_errors() {
+        // `$` is not a Kit token; the lexer now surfaces an error instead of
+        // silently dropping it, so the Pratt parser can produce a diagnostic.
+        let err = tokenize("a $ b").unwrap_err();
+        assert!(matches!(
+            err,
+            LexicalError::UnexpectedCharacter { offset: 2 }
+        ));
+    }
+
+    #[test]
+    fn integer_overflow_produces_error() {
+        // Logos produces Err when parse_int returns None for overflow.
+        // Our tokenize catches this as IntegerOverflow.
+        let err = tokenize("99999999999999999999").unwrap_err();
+        assert!(
+            matches!(&err, LexicalError::IntegerOverflow { text, .. } if text == "99999999999999999999")
         );
+    }
+
+    #[test]
+    fn mixed_overflow_and_valid_tokens_produces_error() {
+        // Overflow literal causes a tokenize error before valid tokens are reached
+        let err = tokenize("99999999999999999999 + 1").unwrap_err();
+        assert!(matches!(&err, LexicalError::IntegerOverflow { .. }));
+    }
+
+    #[test]
+    fn overflow_does_not_affect_valid_expression_with_small_int() {
+        // "1 + 99999999999999999999" -- overflow is NOT the first token,
+        // so Logos produces Err at the overflow position after the `1` and `+`
+        let err = tokenize("1 + 99999999999999999999").unwrap_err();
+        assert!(matches!(&err, LexicalError::IntegerOverflow { .. }));
     }
 }

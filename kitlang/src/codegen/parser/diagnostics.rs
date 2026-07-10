@@ -80,7 +80,7 @@ impl fmt::Display for ExprParseError {
 /// slice of one element. Returns `&'static [&'static str]` for direct
 /// use in `ExprParseError::UnexpectedToken.expected`.
 ///
-/// This is the single canonical match for all token → name mappings.
+/// This is the single canonical match for all token-to-name mappings.
 /// [`tok_name`] is a zero-cost wrapper that extracts the first element.
 pub(crate) fn expected_name(kind: &Tok) -> &'static [&'static str] {
     match kind {

@@ -126,22 +126,42 @@ impl<'a> ExprParser<'a> {
                     ty: TypeId::default(),
                 })
             }
-            _ => Err(ExprParseError::UnexpectedToken {
-                found: tok,
-                expected: &[
-                    "integer literal",
-                    "float literal",
-                    "string literal",
-                    "char literal",
-                    "identifier",
-                    "`(`",
-                    "`[`",
-                    "`if`",
-                    "`null`",
-                    "`true`",
-                    "`false`",
-                ],
-            }),
+            _ => {
+                if self.at_eof() {
+                    Err(ExprParseError::UnexpectedEof {
+                        expected: &[
+                            "integer literal",
+                            "float literal",
+                            "string literal",
+                            "char literal",
+                            "identifier",
+                            "`(`",
+                            "`[`",
+                            "`if`",
+                            "`null`",
+                            "`true`",
+                            "`false`",
+                        ],
+                    })
+                } else {
+                    Err(ExprParseError::UnexpectedToken {
+                        found: tok,
+                        expected: &[
+                            "integer literal",
+                            "float literal",
+                            "string literal",
+                            "char literal",
+                            "identifier",
+                            "`(`",
+                            "`[`",
+                            "`if`",
+                            "`null`",
+                            "`true`",
+                            "`false`",
+                        ],
+                    })
+                }
+            }
         }
     }
 
@@ -179,7 +199,7 @@ impl<'a> ExprParser<'a> {
 
     /// Parse a function call postfix: `(arg1, arg2, ...)`.
     fn parse_call(&mut self, callee: Expr) -> Result<Expr, ExprParseError> {
-        let callee_name = expr_to_callee_name(&callee);
+        let callee_name = expr_to_callee_name(&callee)?;
 
         self.advance(); // consume `(`
         let args = self.parse_comma_list(Tok::RParen, |p| p.parse_expr())?;
