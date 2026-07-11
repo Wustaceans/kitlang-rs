@@ -5,6 +5,7 @@ use super::ast::{Block, Expr, Function, GlobalDecl, Literal, Program, Stmt};
 use super::symbols::{EnumVariantInfo, SymbolTable};
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
 use super::types::{BinaryOperator, Type, TypeId, TypeStore, UnaryOperator};
+use crate::codegen::parser::expr_pratt::callee_name;
 use crate::error::{CompilationError, CompileResult};
 use crate::type_err;
 
@@ -21,10 +22,10 @@ fn set_expr_type(expr: &mut Expr, ty: TypeId) -> &mut Expr {
         | Expr::StructInit { ty: t, .. }
         | Expr::FieldAccess { ty: t, .. }
         | Expr::EnumVariant { ty: t, .. }
-        | Expr::EnumInit { ty: t, .. } => *t = ty,
+        | Expr::EnumInit { ty: t, .. }
+        | Expr::ArrayLiteral { ty: t, .. }
+        | Expr::Index { ty: t, .. } => *t = ty,
         Expr::RangeLiteral { .. } => {}
-        Expr::ArrayLiteral { ty: t, .. } => *t = ty,
-        Expr::Index { ty: t, .. } => *t = ty,
     }
     expr
 }
@@ -193,9 +194,34 @@ impl TypeInferencer {
         self.symbols.pop_scope();
 
         // Register function signature in symbol table
-        if let Some(ret_ty) = func.inferred_return {
-            let param_tys: Vec<TypeId> = func.params.iter().map(|p| p.ty).collect();
-            self.symbols.define_function(&func.name, param_tys, ret_ty);
+        if let Some(ret_ty_id) = func.inferred_return {
+            let param_ids: Vec<TypeId> = func.params.iter().map(|p| p.ty).collect();
+            self.symbols
+                .define_function(&func.name, param_ids.clone(), ret_ty_id);
+
+            // Register function as a value (for higher-order calls like `g(f)`).
+            // Resolve TypeIds back to Type values since Type::Function stores by value.
+            let param_tys: Vec<Type> = param_ids
+                .iter()
+                .filter_map(|id| self.store.resolve(*id).ok())
+                .collect();
+            let ret_ty = self.store.resolve(ret_ty_id).ok();
+            if param_tys.len() == param_ids.len()
+                && let Some(ret_ty) = ret_ty
+            {
+                let fn_ty = Type::Function {
+                    param_tys,
+                    ret_ty: Box::new(ret_ty),
+                };
+                let fn_ty_id = self.store.new_known(fn_ty);
+                self.symbols.define_global(&func.name, fn_ty_id);
+            } else {
+                eprintln!(
+                    "Warning: function '{}' is not usable as a first-class value \
+                     because a parameter or return type could not be resolved",
+                    func.name
+                );
+            }
         }
 
         Ok(())
@@ -350,10 +376,11 @@ impl TypeInferencer {
 
     fn is_call_enum_constructor(&self, expr: &Expr) -> bool {
         match expr {
-            Expr::Call { callee, .. } => self
-                .symbols
-                .lookup_enum_variant_by_simple_name(callee)
-                .is_some(),
+            Expr::Call { callee, .. } => callee_name(callee).is_some_and(|name| {
+                self.symbols
+                    .lookup_enum_variant_by_simple_name(&name)
+                    .is_some()
+            }),
             _ => false,
         }
     }
@@ -436,9 +463,10 @@ impl TypeInferencer {
         let Expr::Call { callee, args, ty } = expr else {
             unreachable!("infer_enum_constructor_call called on non-Call");
         };
+        let callee_str = callee_name(callee).expect("guard ensures this is valid");
         let variant_info = self
             .symbols
-            .lookup_enum_variant_by_simple_name(callee)
+            .lookup_enum_variant_by_simple_name(&callee_str)
             .expect("guard ensures this exists");
         let args_clone = args.clone();
         let enum_def = self.symbols.lookup_enum(&variant_info.enum_name).cloned();
@@ -475,17 +503,98 @@ impl TypeInferencer {
         let Expr::Call { callee, args, ty } = expr else {
             unreachable!("infer_function_call called on non-Call");
         };
-        let (param_tys, ret_ty) = if let Some(sig) = self.symbols.lookup_function(callee) {
-            sig
-        } else {
-            let void_ty = self.store.new_known(Type::Void);
-            (vec![], void_ty)
-        };
 
+        // Named function: lookup by string name in symbol table.
+        if let Some(name) = callee_name(callee)
+            && let Some((param_tys, ret_ty)) = self.symbols.lookup_function(&name)
+        {
+            return self.infer_call_with_sig(&name, param_tys, ret_ty, args, ty);
+        }
+
+        // Indirect call: infer callee type and check callability.
+        let mut infer_failed_on_name = false;
+        match self.infer_expr(callee) {
+            Ok(callee_ty_id) => {
+                if let Ok(callee_ty) = self.store.resolve(callee_ty_id) {
+                    let sig = match &callee_ty {
+                        Type::Function { param_tys, ret_ty } => Some((param_tys, ret_ty.as_ref())),
+                        Type::Ptr(inner) => {
+                            if let Type::Function { param_tys, ret_ty } = inner.as_ref() {
+                                Some((param_tys, ret_ty.as_ref()))
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some((param_tys, ret_ty)) = sig {
+                        if args.len() != param_tys.len() {
+                            return Err(type_err!(
+                                "Function expects {} arguments, got {}",
+                                param_tys.len(),
+                                args.len()
+                            ));
+                        }
+                        for (arg, param_ty) in args.iter_mut().zip(param_tys.iter()) {
+                            let arg_ty = self.infer_expr(arg)?;
+                            let param_ty_id = self.store.new_known(param_ty.clone());
+                            self.unify(arg_ty, param_ty_id)?;
+                        }
+                        let ret_ty_id = self.store.new_known((*ret_ty).clone());
+                        *ty = ret_ty_id;
+                        return Ok(ret_ty_id);
+                    }
+                    // Resolved to a non-callable type.
+                    return Err(type_err!("Cannot call a value of type {callee_ty:?}"));
+                }
+            }
+            Err(e) => {
+                // infer_expr failed. If the callee is a pure name (identifier or
+                // field-access chain), it may be an external symbol. Fall through to
+                // the C interop path. Otherwise propagate the error.
+                if callee_name(callee).is_none() {
+                    return Err(e);
+                }
+                infer_failed_on_name = true;
+            }
+        }
+
+        // C interop: only for names absent from the symbol table.
+        if let Some(name) = callee_name(callee)
+            && self.symbols.lookup_function(&name).is_none()
+            && self.symbols.lookup_global(&name).is_none()
+        {
+            let void_ty = self.store.new_known(Type::Void);
+            for arg in args.iter_mut() {
+                self.infer_expr(arg)?;
+            }
+            *ty = void_ty;
+            return Ok(void_ty);
+        }
+
+        let msg = if infer_failed_on_name {
+            format!(
+                "Cannot call '{}': not a known function, global, or external symbol",
+                callee_name(callee).as_deref().unwrap_or("?")
+            )
+        } else {
+            "Expression is not callable".to_string()
+        };
+        Err(type_err!("{msg}"))
+    }
+
+    /// Infer a call to a known function from the symbol table.
+    fn infer_call_with_sig(
+        &mut self,
+        name: &str,
+        param_tys: Vec<TypeId>,
+        ret_ty: TypeId,
+        args: &mut [Expr],
+        call_ty: &mut TypeId,
+    ) -> Result<TypeId, CompilationError> {
         if !param_tys.is_empty() && args.len() != param_tys.len() {
             return Err(type_err!(
-                "Function '{}' expects {} arguments, got {}",
-                callee,
+                "Function '{name}' expects {} arguments, got {}",
                 param_tys.len(),
                 args.len()
             ));
@@ -503,7 +612,7 @@ impl TypeInferencer {
             }
         }
 
-        *ty = ret_ty;
+        *call_ty = ret_ty;
         Ok(ret_ty)
     }
 
@@ -705,8 +814,6 @@ impl TypeInferencer {
             .iter()
             .map(|f| (f.name.clone(), f.annotation.clone(), f.default.clone()))
             .collect();
-
-        let _ = struct_def;
 
         // inject default values for missing optional fields
         for field_info in &field_infos {

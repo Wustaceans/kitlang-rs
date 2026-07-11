@@ -384,3 +384,8 @@ fn test_typedef() -> Result<(), Box<dyn std::error::Error>> {
 fn test_array_literal() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("array_literal", None)
 }
+
+#[test]
+fn test_indirect_call() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("indirect_call", None)
+}

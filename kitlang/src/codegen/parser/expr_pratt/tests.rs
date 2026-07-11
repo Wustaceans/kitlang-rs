@@ -3,12 +3,12 @@
 
 use crate::codegen::types::{AssignmentOperator, BinaryOperator, UnaryOperator};
 
-/// Convenience: parse an expression and unwrap.
+/// Parse an expression and unwrap
 fn p(text: &str) -> Expr {
     parse_kit_expr(text).unwrap_or_else(|e| panic!("parse failed for `{text}`: {e}"))
 }
 
-/// Convenience: parse and assert the error contains a substring.
+/// Parse and assert the error contains a substring.
 fn p_err(text: &str, needle: &str) {
     let err = parse_kit_expr(text)
         .err()
@@ -22,6 +22,7 @@ fn p_err(text: &str, needle: &str) {
 
 // --- Literals ---
 
+/// Integer literal `42` is parsed as `Literal::Int(42)`.
 #[test]
 fn integer_literal() {
     let e = p("42");
@@ -34,6 +35,7 @@ fn integer_literal() {
     ));
 }
 
+/// Float literal `3.14` is parsed with correct precision.
 #[test]
 fn float_literal() {
     let e = p("3.14");
@@ -42,12 +44,14 @@ fn float_literal() {
     );
 }
 
+/// Double-quoted string `"hello"` is parsed as `Literal::String`.
 #[test]
 fn string_literal() {
     let e = p(r#""hello""#);
     assert!(matches!(e, Expr::Literal { value: Literal::String(s), .. } if s == "hello"));
 }
 
+/// `true` and `false` both parse as `Literal::Bool`.
 #[test]
 fn bool_literals() {
     assert!(matches!(
@@ -66,6 +70,7 @@ fn bool_literals() {
     ));
 }
 
+/// `null` is parsed as `Literal::Null`.
 #[test]
 fn null_literal() {
     assert!(matches!(
@@ -79,6 +84,7 @@ fn null_literal() {
 
 // --- Identifiers ---
 
+/// Bare identifier `foo` is parsed as `Expr::Identifier`.
 #[test]
 fn identifier() {
     let e = p("foo");
@@ -107,6 +113,7 @@ fn qualified_identifier_is_built_via_postfix_chain() {
 
 // --- Precedence ---
 
+/// `1 + 2 * 3` - `*` binds tighter than `+`.
 #[test]
 fn additive_vs_multiplicative() {
     let e = p("1 + 2 * 3");
@@ -122,6 +129,7 @@ fn additive_vs_multiplicative() {
     }
 }
 
+/// `a == b < c` - `==` is looser than `<`, parsed as `(a == (b < c))`.
 #[test]
 fn comparison_vs_equality() {
     let e = p("a == b < c");
@@ -141,6 +149,7 @@ fn comparison_vs_equality() {
     }
 }
 
+/// `1 + 2 + 3` - `+` is left-associative: `((1 + 2) + 3)`.
 #[test]
 fn left_associative_addition() {
     let e = p("1 + 2 + 3");
@@ -166,6 +175,7 @@ fn left_associative_addition() {
     }
 }
 
+/// `a += b += c` - `+=` is right-associative: `(a += (b += c))`.
 #[test]
 fn right_associative_assignment() {
     let e = p("a += b += c");
@@ -181,6 +191,7 @@ fn right_associative_assignment() {
     }
 }
 
+/// `-a + b` - prefix `-` binds tighter than `+`.
 #[test]
 fn unary_minus_binds_tighter_than_addition() {
     let e = p("-a + b");
@@ -202,6 +213,7 @@ fn unary_minus_binds_tighter_than_addition() {
     }
 }
 
+/// `&arr[i]` - prefix `&` is looser than postfix `[]`, parsed as `&(arr[i])`.
 #[test]
 fn unary_looser_than_postfix() {
     let e = p("&arr[i]");
@@ -215,6 +227,7 @@ fn unary_looser_than_postfix() {
 
 // --- Postfix chains ---
 
+/// `a.b.c.d.e` - field access chains to at least 4 levels.
 #[test]
 fn chained_field_access() {
     let e = p("a.b.c.d.e");
@@ -228,6 +241,7 @@ fn chained_field_access() {
     assert!(matches!(cur, Expr::Identifier { name, .. } if name == "a"));
 }
 
+/// 100-level field-access chain `a.f0.f1...f99` does not overflow the stack.
 #[test]
 fn stress_deep_postfix_chain() {
     let mut src = String::from("a");
@@ -245,6 +259,7 @@ fn stress_deep_postfix_chain() {
     assert_eq!(depth, 100);
 }
 
+/// 100 levels of nested parentheses are parsed correctly.
 #[test]
 fn stress_deep_nested_parens() {
     let mut src = String::new();
@@ -267,28 +282,31 @@ fn stress_deep_nested_parens() {
 
 // --- Function calls ---
 
+/// `f()` - function call with zero arguments.
 #[test]
 fn call_no_args() {
     let e = p("f()");
     if let Expr::Call { callee, args, .. } = &e {
-        assert_eq!(callee, "f");
+        assert_eq!(callee_name(callee), Some("f".to_string()));
         assert!(args.is_empty());
     } else {
         panic!("expected Call, got {e:?}");
     }
 }
 
+/// `f(1)` - function call with one argument.
 #[test]
 fn call_one_arg() {
     let e = p("f(1)");
     if let Expr::Call { callee, args, .. } = &e {
-        assert_eq!(callee, "f");
+        assert_eq!(callee_name(callee), Some("f".to_string()));
         assert_eq!(args.len(), 1);
     } else {
         panic!("expected Call, got {e:?}");
     }
 }
 
+/// `f(1, 2, 3, 4, 5)` - function call with five arguments.
 #[test]
 fn call_many_args() {
     let e = p("f(1, 2, 3, 4, 5)");
@@ -299,17 +317,19 @@ fn call_many_args() {
     }
 }
 
+/// `pkg.math.add(2, 3)` - qualified name via field-access chain is the callee.
 #[test]
 fn call_qualified_name() {
     let e = p("pkg.math.add(2, 3)");
     if let Expr::Call { callee, args, .. } = &e {
-        assert_eq!(callee, "pkg.math.add");
+        assert_eq!(callee_name(callee), Some("pkg.math.add".to_string()));
         assert_eq!(args.len(), 2);
     } else {
         panic!("expected Call, got {e:?}");
     }
 }
 
+/// `f(g(1), h(2, 3))` - nested calls as arguments.
 #[test]
 fn call_with_nested_expressions_in_args() {
     let e = p("f(g(1), h(2, 3))");
@@ -322,6 +342,7 @@ fn call_with_nested_expressions_in_args() {
 
 // --- Indexing ---
 
+/// `arr[0]` - index expression with identifier base and integer index.
 #[test]
 fn index() {
     let e = p("arr[0]");
@@ -339,6 +360,7 @@ fn index() {
     }
 }
 
+/// `a[i][j]` - chained index produces two `Index` nodes.
 #[test]
 fn chained_index() {
     let e = p("a[i][j]");
@@ -353,6 +375,7 @@ fn chained_index() {
 
 // --- Array literals ---
 
+/// `[]` - empty array literal.
 #[test]
 fn empty_array() {
     let e = p("[]");
@@ -363,6 +386,7 @@ fn empty_array() {
     }
 }
 
+/// `[1, 2, 3]` - array literal with three elements.
 #[test]
 fn array_with_elements() {
     let e = p("[1, 2, 3]");
@@ -375,6 +399,7 @@ fn array_with_elements() {
 
 // --- Struct init ---
 
+/// `struct Point { x: 10, y: 20 }` - struct init with two named fields.
 #[test]
 fn struct_init() {
     let e = p("struct Point { x: 10, y: 20 }");
@@ -389,6 +414,7 @@ fn struct_init() {
 
 // --- If expressions ---
 
+/// `if a then b else c` - if expression with all three branches.
 #[test]
 fn if_expr() {
     let e = p("if a then b else c");
@@ -409,6 +435,7 @@ fn if_expr() {
 
 // --- Logical operators ---
 
+/// `a || b && c` - `&&` binds tighter than `||`, parsed as `(a || (b && c))`.
 #[test]
 fn logical_and_vs_or() {
     let e = p("a || b && c");
@@ -428,6 +455,7 @@ fn logical_and_vs_or() {
 
 // --- Errors ---
 
+/// `(1 + 2` - missing `)` produces error mentioning `)`.
 #[test]
 fn missing_rparen() {
     p_err("(1 + 2", "`)`");
@@ -435,6 +463,7 @@ fn missing_rparen() {
 
 // --- Range literals ---
 
+/// `1...5` - range literal with integer start and end.
 #[test]
 fn range_literal_simple() {
     let e = p("1...5");
@@ -458,6 +487,7 @@ fn range_literal_simple() {
     }
 }
 
+/// `a + 1...b - 1` - range bounds can be arbitrary expressions.
 #[test]
 fn range_literal_with_expressions() {
     let e = p("a + 1...b - 1");
@@ -481,43 +511,48 @@ fn range_literal_with_expressions() {
     }
 }
 
+/// `arr[0` - missing `]` produces error mentioning `]`.
 #[test]
 fn missing_rbracket() {
     p_err("arr[0", "`]`");
 }
 
+/// `+` at start - parser rejects leading binary operator.
 #[test]
 fn unexpected_token_at_start() {
     p_err("+", "identifier");
 }
 
+/// `foo.` - trailing dot is rejected with expected identifier.
 #[test]
 fn missing_field_name() {
     p_err("foo.", "identifier");
 }
 
+/// `if a then b` - missing `else` produces error mentioning `else`.
 #[test]
 fn missing_else() {
     p_err("if a then b", "`else`");
 }
 
+/// `a b` - two adjacent expressions produce end-of-expression error.
 #[test]
 fn trailing_tokens_produce_error() {
     p_err("a b", "end of expression");
 }
 
+/// `a $ b` - `$` is an unrecognized character error.
 #[test]
 fn unrecognized_characters_produce_error() {
-    let err = parse_kit_expr("a $ b").err().expect("should error on $");
+    let err = parse_kit_expr("a $ b").expect_err("should error on $");
     let msg = err.to_human_message();
     assert!(msg.contains("unexpected character"), "msg: {msg}");
 }
 
+/// Literal exceeding i64 range produces overflow error.
 #[test]
 fn integer_overflow_is_detected() {
-    let err = parse_kit_expr("99999999999999999999")
-        .err()
-        .expect("should error on overflow literal");
+    let err = parse_kit_expr("99999999999999999999").expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -525,11 +560,11 @@ fn integer_overflow_is_detected() {
     );
 }
 
+/// Overflow in left operand of binary expression.
 #[test]
 fn integer_overflow_as_left_operand_is_detected() {
-    let err = parse_kit_expr("99999999999999999999 + 1")
-        .err()
-        .expect("should error on overflow literal");
+    let err =
+        parse_kit_expr("99999999999999999999 + 1").expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -537,11 +572,11 @@ fn integer_overflow_as_left_operand_is_detected() {
     );
 }
 
+/// Overflow in right operand of binary expression.
 #[test]
 fn integer_overflow_as_right_operand_is_detected() {
-    let err = parse_kit_expr("1 + 99999999999999999999")
-        .err()
-        .expect("should error on overflow literal");
+    let err =
+        parse_kit_expr("1 + 99999999999999999999").expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -549,38 +584,47 @@ fn integer_overflow_as_right_operand_is_detected() {
     );
 }
 
+/// Missing `)` uses `ExpectedEof` variant, not the `Semi` sentinel.
 #[test]
 fn eof_uses_unexpected_eof_not_semi() {
-    let err = parse_kit_expr("(1 + 2")
-        .err()
-        .expect("should error on missing )");
+    let err = parse_kit_expr("(1 + 2").expect_err("should error on missing )");
     let msg = err.to_human_message();
     assert!(
         msg.contains("end of expression"),
         "expected 'end of expression', got: {msg}"
     );
     // Also verify the existing test still works:
-    let missing_rparen = parse_kit_expr("(1 + 2").err().unwrap();
+    let missing_rparen = parse_kit_expr("(1 + 2").expect_err("should error on missing )");
     assert!(missing_rparen.to_human_message().contains("`)`"));
 }
 
+/// `f()()` - nested calls: result of `f()` is called with no args.
 #[test]
-fn indirect_call_errors_cleanly() {
-    let err = parse_kit_expr("f()()")
-        .err()
-        .expect("should error on indirect call");
-    let msg = err.to_human_message();
-    assert!(
-        msg.contains("indirect calls"),
-        "expected 'indirect calls' error, got: {msg}"
-    );
+fn indirect_call_is_parsed() {
+    let e = p("f()()");
+    match &e {
+        Expr::Call { callee, args, .. } => {
+            assert!(args.is_empty(), "outer call should have no args");
+            match callee.as_ref() {
+                Expr::Call {
+                    callee: inner,
+                    args: inner_args,
+                    ..
+                } => {
+                    assert_eq!(callee_name(inner), Some("f".to_string()));
+                    assert!(inner_args.is_empty());
+                }
+                _ => panic!("expected inner Call, got {callee:?}"),
+            }
+        }
+        _ => panic!("expected outer Call, got {e:?}"),
+    }
 }
 
+/// `x++` - postfix `++` is rejected (not supported in Kit).
 #[test]
 fn postfix_increment_is_now_an_error() {
-    let err = parse_kit_expr("x++")
-        .err()
-        .expect("should error on trailing ++");
+    let err = parse_kit_expr("x++").expect_err("should error on trailing ++");
     let msg = err.to_human_message();
     assert!(
         msg.contains("PlusPlus") || msg.contains("end of expression"),
@@ -588,11 +632,10 @@ fn postfix_increment_is_now_an_error() {
     );
 }
 
+/// `x--` - postfix `--` is rejected (not supported in Kit).
 #[test]
 fn postfix_decrement_is_now_an_error() {
-    let err = parse_kit_expr("x--")
-        .err()
-        .expect("should error on trailing --");
+    let err = parse_kit_expr("x--").expect_err("should error on trailing --");
     let msg = err.to_human_message();
     assert!(
         msg.contains("MinusMinus") || msg.contains("end of expression"),
@@ -600,11 +643,10 @@ fn postfix_decrement_is_now_an_error() {
     );
 }
 
+/// `sizeof(i32)` - `sizeof` keyword is rejected (not supported in Kit).
 #[test]
 fn sizeof_is_not_supported() {
-    let err = parse_kit_expr("sizeof(i32)")
-        .err()
-        .expect("sizeof should error");
+    let err = parse_kit_expr("sizeof(i32)").expect_err("sizeof should error");
     let msg = err.to_human_message();
     assert!(msg.contains("Sizeof"), "msg: {msg}");
 }

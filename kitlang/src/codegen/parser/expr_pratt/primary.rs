@@ -198,13 +198,12 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Parse a function call postfix: `(arg1, arg2, ...)`.
+    /// The callee is any expression; no rejection of indirect calls.
     fn parse_call(&mut self, callee: Expr) -> Result<Expr, ExprParseError> {
-        let callee_name = expr_to_callee_name(&callee)?;
-
         self.advance(); // consume `(`
         let args = self.parse_comma_list(Tok::RParen, |p| p.parse_expr())?;
         Ok(Expr::Call {
-            callee: callee_name,
+            callee: Box::new(callee),
             args,
             ty: TypeId::default(),
         })

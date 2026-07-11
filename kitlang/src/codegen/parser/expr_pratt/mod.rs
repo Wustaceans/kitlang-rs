@@ -1,32 +1,36 @@
 //! Hand-written Pratt parser for Kit expressions.
 //!
 //! This module takes over expression parsing from the pest-based grammar.
-//! Pest still handles the program, declaration, statement, and type-annotation
-//! grammars. For every `Pair<'_, Rule>` whose rule is an expression (i.e.,
-//! the 13 precedence levels `expr -> assign -> logical_or -> ... -> primary`),
-//! the parser hands off to [`ExprParser::parse_expr`].
+//!
+//! Pest still handles the program, declaration, statement, and type-annotation grammars. For every
+//! `Pair<'_, Rule>` whose rule is an expression (i.e. the 13 precedence levels `expr -> assign ->
+//! logical_or -> ... -> primary`), the parser hands off to [`ExprParser::parse_expr`].
 //!
 //! Pratt Parsing & Operator Precedence
 //! -----------------------------------
-//! The pest grammar used 13 mutually recursive functions (one per precedence
-//! level), which overflowed the default 1 MB stack on Windows. The Pratt
-//! parser uses a single function with a binding-power loop, dramatically
-//! reducing recursive depth compared to the old 13-level grammar chain.
-//! Parenthesized sub-expressions still recurse through `parse_primary`
-//! and `parse_expr`, so stack depth is `O(parenthetical nesting)`.
-//! Operator precedence is defined in [`binding_power::infix`],
-//! [`binding_power::postfix`], [`binding_power::prefix`]. Each infix operator
-//! has a (lbp, rbp) pair: `lbp < rbp` = right-associative (assignment),
+//! The pest grammar used 13 mutually recursive functions (one per precedence level, which
+//! overflowed the default 1 MB stack on Windows.
+//!
+//! The Pratt parser uses a single function with a binding-power loop, dramatically reducing
+//! recursive depth compared to the old 13-level grammar chain.
+//!
+//! Parenthesized sub-expressions still recurse through `parse_primary` and `parse_expr`, so stack
+//! depth is `O(parenthetical nesting)`. Operator precedence is defined in
+//! [`binding_power::infix`], [`binding_power::postfix`], [`binding_power::prefix`].
+//!
+//! Each infix operator has a (lbp, rbp) pair: `lbp < rbp` = right-associative (assignment),
 //! `lbp == rbp` = left-associative (most binary ops).
 //!
 //! Errors & Source Spans
 //! ---------------------
 //! All parse errors are values of [`ExprParseError`] (in `diagnostics.rs`).
-//! The parser never prints, never allocates strings for error messages,
-//! and never holds source-file identity. Conversion to
-//! `CompilationError::ParseError(String)` happens at `PestExpr::parse`
-//! in `parser/mod.rs`. The token stream carries byte ranges; the parser
-//! uses them internally but does not currently attach them to AST nodes.
+//!
+//! The parser never prints, never allocates strings for error messages, and never holds
+//! source-file identity. Conversion to `Compilation::ParseError(String)` happens at
+//! `PestExpr::parse` in `parser/mod.rs`.
+//!
+//! The token stream carries byte ranges; the parser uses them internally but does not currently
+//! attach them to AST nodes.
 
 use crate::codegen::ast::{Expr, Literal};
 use crate::codegen::type_ast::FieldInit;
@@ -37,10 +41,6 @@ use super::binding_power::{
     infix, is_range_op, postfix, prefix, tok_to_assign_op, tok_to_binary_op, tok_to_unary_op,
 };
 use super::diagnostics::{ExprParseError, expected_name};
-
-// ---------------------------------------------------------------------------
-// Parser
-// ---------------------------------------------------------------------------
 
 /// A Pratt parser for Kit expressions.
 ///
@@ -86,15 +86,6 @@ impl<'a> ExprParser<'a> {
         self.tokens.get(self.pos).unwrap_or(&EOF)
     }
 
-    /// Peek the next token (one past the current). Same EOF behavior.
-    fn peek_next(&self) -> &SpannedTok {
-        static EOF: SpannedTok = SpannedTok {
-            kind: Tok::Semi,
-            span: 0..0,
-        };
-        self.tokens.get(self.pos + 1).unwrap_or(&EOF)
-    }
-
     /// Consume and return the current token.
     fn advance(&mut self) -> &SpannedTok {
         let tok = &self.tokens[self.pos];
@@ -130,7 +121,7 @@ impl<'a> ExprParser<'a> {
         // Postfix chain: field access, index, call.
         lhs = self.parse_postfix_chain(lhs)?;
 
-        // Infix operators (binary ops, range).
+        // Infix operators (binary ops, range)
         loop {
             let kind = self.peek().kind.clone();
             let Some((lbp, rbp)) = infix(&kind) else {
@@ -240,29 +231,18 @@ impl<'a> ExprParser<'a> {
     }
 }
 
-/// Extract a callee name from a function-call's leading expression.
-///
-/// For `Expr::Identifier { name, .. }` this is just `name`.
-/// For `Expr::FieldAccess { expr, field_name, .. }` chains like
-/// `pkg.math.add`, this concatenates the path with `.`.
-/// Rejects non-trivial call targets (e.g. calling the result of another
-/// call) with an error.
-fn expr_to_callee_name(expr: &Expr) -> Result<String, ExprParseError> {
+/// Extract a string callee name from an expression for name-mangling
+/// and symbol-table lookup. Returns `None` for indirect calls that
+/// must be resolved by the callee's inferred type.
+pub(crate) fn callee_name(expr: &Expr) -> Option<String> {
     match expr {
-        Expr::Identifier { name, .. } => Ok(name.clone()),
+        Expr::Identifier { name, .. } => Some(name.clone()),
         Expr::FieldAccess {
             expr: base,
             field_name,
             ..
-        } => {
-            let base_name = expr_to_callee_name(base)?;
-            Ok(format!("{base_name}.{field_name}"))
-        }
-        _ => Err(ExprParseError::Custom(
-            "indirect calls (calling the result of another expression) \
-             are not supported by the Kit compiler"
-                .into(),
-        )),
+        } => Some(format!("{}.{}", callee_name(base)?, field_name)),
+        _ => None,
     }
 }
 
@@ -270,12 +250,13 @@ fn expr_to_callee_name(expr: &Expr) -> Result<String, ExprParseError> {
 // Module surface: parse an expression from source text.
 // ---------------------------------------------------------------------------
 
-/// Parse a Kit expression from source text. This is the public entry
-/// point used by the pest-to-Pratt bridge (`PestExpr::parse`).
+/// Parse a Kit expression from source text. This is the public entry point used by the
+/// pest-to-Pratt bridge (`PestExpr::parse`).
 ///
-/// The `text` should be the source text of the expression as a
-/// `Pair::as_str()` slice. Tokenization, parsing, and conversion to an
-/// `Expr` all happen here.
+/// The `text` should be the source text of the expression as a `Pair::as_str()` slice.
+/// Tokenization, parsing, and conversion to an `Expr` all happen here.
+///
+/// # Errors
 ///
 /// Errors are returned for:
 /// - Unrecognized characters in the source
@@ -307,13 +288,9 @@ pub(crate) fn parse_kit_expr(text: &str) -> Result<Expr, ExprParseError> {
     Ok(expr)
 }
 
-// ---------------------------------------------------------------------------
 // Primary expression parsers (include'd into this module scope).
-// ---------------------------------------------------------------------------
 include!("primary.rs");
 
-// ---------------------------------------------------------------------------
 // Tests (include'd into this module scope, test builds only).
-// ---------------------------------------------------------------------------
 #[cfg(test)]
 include!("tests.rs");

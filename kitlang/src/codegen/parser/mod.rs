@@ -1,6 +1,6 @@
 mod binding_power;
 mod diagnostics;
-mod expr_pratt;
+pub(crate) mod expr_pratt;
 
 use pest::iterators::Pair;
 
@@ -168,14 +168,13 @@ impl Parser {
                 args.push(MetaArg::Literal(Literal::String(val.to_string())));
             } else if let Ok(n) = text.parse::<i64>() {
                 args.push(MetaArg::Literal(Literal::Int(n)));
-            } else if text == "true" {
-                args.push(MetaArg::Literal(Literal::Bool(true)));
-            } else if text == "false" {
-                args.push(MetaArg::Literal(Literal::Bool(false)));
-            } else if text == "null" {
-                args.push(MetaArg::Literal(Literal::Null));
             } else {
-                args.push(MetaArg::Identifier(text));
+                match text.as_str() {
+                    "true" => args.push(MetaArg::Literal(Literal::Bool(true))),
+                    "false" => args.push(MetaArg::Literal(Literal::Bool(false))),
+                    "null" => args.push(MetaArg::Literal(Literal::Null)),
+                    _ => args.push(MetaArg::Identifier(text)),
+                }
             }
         }
         Ok(Metadata { name, args })
@@ -425,7 +424,7 @@ impl Parser {
                 .next()
                 .ok_or(parse_error!("trait impl missing 'for' type"))?,
         )?;
-        // For now, return a simple placeholder
+        // TODO: For now, return a simple placeholder
         Ok(ImplDefinition {
             name: String::new(),
             trait_type,
@@ -694,7 +693,22 @@ impl Parser {
                 let inner_ty = self.parse_type(inner_ptr_type)?;
                 Ok(Type::Ptr(Box::new(inner_ty)))
             }
-            // TODO: Handle other type_annotation rules like function_type, tuple_type
+            Rule::function_type => {
+                let inner = inner_rule.into_inner();
+                // All type_annotation pairs from the params (zero or more),
+                // followed by the return type as the last pair.
+                let mut type_pairs: Vec<Pair<Rule>> = inner.collect();
+                let ret_pair = type_pairs
+                    .pop()
+                    .ok_or_else(|| parse_error!("function_type missing return type"))?;
+                let ret_ty = self.parse_type(ret_pair)?;
+                let param_tys: Result<Vec<Type>, CompilationError> =
+                    type_pairs.into_iter().map(|p| self.parse_type(p)).collect();
+                Ok(Type::Function {
+                    param_tys: param_tys?,
+                    ret_ty: Box::new(ret_ty),
+                })
+            }
             _ => Err(CompilationError::ParseError(format!(
                 "Unexpected rule in type_annotation: {:?}",
                 inner_rule.as_rule()
@@ -799,10 +813,4 @@ impl Parser {
         )?;
         Ok(Stmt::For { var, iter, body })
     }
-
-    // The pest-based `parse_struct_init` and `parse_field_init` helpers
-    // were removed when the Pratt parser took over. Struct literals are
-    // now parsed from the token stream directly (see
-    // `ExprParser::parse_struct_init` in `expr_pratt.rs`), so the
-    // `Pair<Rule>`-based versions in this `impl` are no longer reachable.
 }

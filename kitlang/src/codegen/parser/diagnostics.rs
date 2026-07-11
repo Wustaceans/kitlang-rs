@@ -81,7 +81,6 @@ impl fmt::Display for ExprParseError {
 /// use in `ExprParseError::UnexpectedToken.expected`.
 ///
 /// This is the single canonical match for all token-to-name mappings.
-/// [`tok_name`] is a zero-cost wrapper that extracts the first element.
 pub(crate) fn expected_name(kind: &Tok) -> &'static [&'static str] {
     match kind {
         Tok::LParen => &["`(`"],
@@ -151,12 +150,6 @@ pub(crate) fn expected_name(kind: &Tok) -> &'static [&'static str] {
     }
 }
 
-/// Map a `Tok` kind to a short human-readable name for error messages.
-/// Zero-cost wrapper around [`expected_name`].
-pub(crate) fn tok_name(kind: &Tok) -> &'static str {
-    expected_name(kind)[0]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,15 +182,5 @@ mod tests {
     fn custom_message_passes_through() {
         let err = ExprParseError::Custom("nope".to_string());
         assert_eq!(err.to_human_message(), "nope");
-    }
-
-    #[test]
-    fn tok_name_is_stable() {
-        // Sanity check: a few representative names.
-        assert_eq!(tok_name(&Tok::Plus), "`+`");
-        assert_eq!(tok_name(&Tok::LParen), "`(`");
-        assert_eq!(tok_name(&Tok::KwIf), "`if`");
-        assert_eq!(tok_name(&Tok::IntLit(0)), "integer literal");
-        assert_eq!(tok_name(&Tok::StringLit(String::new())), "string literal");
     }
 }

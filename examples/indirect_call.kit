@@ -1,0 +1,13 @@
+include "stdio.h";
+
+function f(i: Int): Float {
+    return i;
+}
+
+function g(func: function (Int) -> Float, i: Int): Float {
+    return func(i);
+}
+
+function main() {
+    printf("%.1f\n", g(f, 4));
+}
