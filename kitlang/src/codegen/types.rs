@@ -224,7 +224,11 @@ impl TypeStore {
         if a == b
             && !matches!(
                 a,
-                Type::Ptr(_) | Type::Tuple(_) | Type::CArray(..) | Type::Named(_)
+                Type::Ptr(_)
+                    | Type::Tuple(_)
+                    | Type::CArray(..)
+                    | Type::Named(_)
+                    | Type::Function { .. }
             )
         {
             return Ok(());
@@ -238,7 +242,11 @@ impl TypeStore {
         if a_ty == b_ty
             && !matches!(
                 a_ty,
-                Type::Ptr(_) | Type::Tuple(_) | Type::CArray(..) | Type::Named(_)
+                Type::Ptr(_)
+                    | Type::Tuple(_)
+                    | Type::CArray(..)
+                    | Type::Named(_)
+                    | Type::Function { .. }
             )
         {
             return Ok(());
@@ -282,6 +290,30 @@ impl TypeStore {
                 }
             }
 
+            // Function types: unify element-wise
+            (
+                Type::Function {
+                    param_tys: p1,
+                    ret_ty: r1,
+                },
+                Type::Function {
+                    param_tys: p2,
+                    ret_ty: r2,
+                },
+            ) => {
+                if p1.len() != p2.len() {
+                    return Err(format!(
+                        "Cannot unify functions with different parameter counts: {} vs {}",
+                        p1.len(),
+                        p2.len()
+                    ));
+                }
+                for (t1, t2) in p1.iter().zip(p2.iter()) {
+                    self.unify_type_ids(t1.clone(), t2.clone())?;
+                }
+                self.unify_type_ids((**r1).clone(), (**r2).clone())
+            }
+
             // Numeric type promotion: allow mixed-width integer/float types to unify
             _ if Self::is_numeric(&a_ty) && Self::is_numeric(&b_ty) => Ok(()),
 
@@ -320,9 +352,7 @@ impl TypeStore {
     }
 }
 
-/// Represents a type in the Kit language.
-///
-/// TODO: further description
+/// A type in the Kit language: primitives, composites (struct/enum/tuple), references (pointers/named aliases), and function types.
 #[derive(Clone, Debug, PartialEq, Hash)]
 pub enum Type {
     /// User-defined named type (fallback for types not covered by other variants).
@@ -373,6 +403,14 @@ pub enum Type {
         name: String,
         /// Field definitions for the struct.
         fields: Vec<(String, TypeId)>,
+    },
+    /// Function type (e.g., `function (Int) -> Float`).
+    /// Parameter and return types are stored by value. When needed for
+    /// unification, they are converted to TypeId via [`TypeStore::new_known`]
+    /// (see `unify_types` for the same pattern used by `Tuple`).
+    Function {
+        param_tys: Vec<Type>,
+        ret_ty: Box<Type>,
     },
 }
 
@@ -454,6 +492,23 @@ impl ToCRepr for Type {
                     name: format!("{}[{}]", elem_repr.name, size),
                     declaration: None,
                     headers: elem_repr.headers,
+                }
+            }
+            Type::Function { param_tys, ret_ty } => {
+                let ret_repr = ret_ty.to_c_repr();
+                let mut all_headers = ret_repr.headers.clone();
+                let params: Vec<String> = param_tys
+                    .iter()
+                    .map(|t| {
+                        let r = t.to_c_repr();
+                        all_headers.extend(r.headers);
+                        r.name
+                    })
+                    .collect();
+                CRepr {
+                    name: format!("{}(*)({})", ret_repr.name, params.join(", ")),
+                    declaration: None,
+                    headers: all_headers,
                 }
             }
             Type::Named(name) => simple_c_type(name, &[]),

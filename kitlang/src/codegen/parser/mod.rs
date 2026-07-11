@@ -1,11 +1,15 @@
-mod expr;
+mod binding_power;
+mod diagnostics;
+pub(crate) mod expr_pratt;
 
 use pest::iterators::Pair;
 
 use crate::error::CompilationError;
 use crate::{Rule, parse_error};
 
-use super::ast::{Block, Function, GlobalDecl, Include, Literal, MetaArg, Metadata, Param, Stmt};
+use super::ast::{
+    Block, Expr, Function, GlobalDecl, Include, Literal, MetaArg, Metadata, Param, Stmt,
+};
 use super::module::{ImportType, ModuleImport, ModulePath};
 use super::type_ast::{
     EnumDefinition, EnumVariant, Field, ImplDefinition, RuleDecl, RuleSet, StructDefinition,
@@ -13,6 +17,40 @@ use super::type_ast::{
 };
 use super::types::{Type, TypeId};
 use crate::error::CompileResult;
+
+/// Bridge between pest and the Pratt parser.
+///
+/// The pest-based parser walks the grammar tree and, when it encounters
+/// an `expr` rule, hands the corresponding `Pair` off to the Pratt parser
+/// via this adapter. The adapter:
+///
+/// 1. Pulls the source text out of the `Pair` with `as_str()`.
+/// 2. Tokenizes it with the Logos lexer.
+/// 3. Parses the tokens with the Pratt parser.
+/// 4. Converts the Pratt parser's `ExprParseError` to the public
+///    `CompilationError`.
+///
+/// This is the *only* conversion point between the two parsers; it's
+/// also the only place the public error type is built from the
+/// parser-internal one. Future diagnostic improvements (spans, severity,
+/// pretty rendering) are added at this single seam.
+pub(crate) struct PestExpr<'a> {
+    pair: Pair<'a, Rule>,
+}
+
+impl<'a> PestExpr<'a> {
+    /// Wrap a pest `Pair` whose rule is an expression.
+    pub(crate) fn new(pair: Pair<'a, Rule>) -> Self {
+        Self { pair }
+    }
+
+    /// Parse the wrapped pair as a Kit expression.
+    pub(crate) fn parse(self) -> CompileResult<Expr> {
+        let text = self.pair.as_str();
+        expr_pratt::parse_kit_expr(text)
+            .map_err(|e| CompilationError::ParseError(e.to_human_message()))
+    }
+}
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Parser;
@@ -130,20 +168,32 @@ impl Parser {
                 args.push(MetaArg::Literal(Literal::String(val.to_string())));
             } else if let Ok(n) = text.parse::<i64>() {
                 args.push(MetaArg::Literal(Literal::Int(n)));
-            } else if text == "true" {
-                args.push(MetaArg::Literal(Literal::Bool(true)));
-            } else if text == "false" {
-                args.push(MetaArg::Literal(Literal::Bool(false)));
-            } else if text == "null" {
-                args.push(MetaArg::Literal(Literal::Null));
             } else {
-                args.push(MetaArg::Identifier(text));
+                match text.as_str() {
+                    "true" => args.push(MetaArg::Literal(Literal::Bool(true))),
+                    "false" => args.push(MetaArg::Literal(Literal::Bool(false))),
+                    "null" => args.push(MetaArg::Literal(Literal::Null)),
+                    _ => args.push(MetaArg::Identifier(text)),
+                }
             }
         }
         Ok(Metadata { name, args })
     }
 
     /// Parse a `function_decl` rule into a `Function`.
+    /// Parse an expression via the Pratt parser. This is the unified
+    /// entry point used by every pest-side call site that needs an
+    /// expression AST node.
+    ///
+    /// `Parser` is `Copy`, so we take `self` by value to match the
+    /// signature of the (now-deleted) pest-based `parse_expr`. The
+    /// caller doesn't need to mutate the parser; the Pratt parser
+    /// operates on its own `ExprParser` instance built from a token
+    /// slice derived from the `Pair`.
+    pub fn parse_expr(self, pair: Pair<Rule>) -> CompileResult<Expr> {
+        PestExpr::new(pair).parse()
+    }
+
     pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {
         let mut inner = pair.into_inner();
 
@@ -374,7 +424,7 @@ impl Parser {
                 .next()
                 .ok_or(parse_error!("trait impl missing 'for' type"))?,
         )?;
-        // For now, return a simple placeholder
+        // TODO: For now, return a simple placeholder
         Ok(ImplDefinition {
             name: String::new(),
             trait_type,
@@ -643,7 +693,22 @@ impl Parser {
                 let inner_ty = self.parse_type(inner_ptr_type)?;
                 Ok(Type::Ptr(Box::new(inner_ty)))
             }
-            // TODO: Handle other type_annotation rules like function_type, tuple_type
+            Rule::function_type => {
+                let inner = inner_rule.into_inner();
+                // All type_annotation pairs from the params (zero or more),
+                // followed by the return type as the last pair.
+                let mut type_pairs: Vec<Pair<Rule>> = inner.collect();
+                let ret_pair = type_pairs
+                    .pop()
+                    .ok_or_else(|| parse_error!("function_type missing return type"))?;
+                let ret_ty = self.parse_type(ret_pair)?;
+                let param_tys: Result<Vec<Type>, CompilationError> =
+                    type_pairs.into_iter().map(|p| self.parse_type(p)).collect();
+                Ok(Type::Function {
+                    param_tys: param_tys?,
+                    ret_ty: Box::new(ret_ty),
+                })
+            }
             _ => Err(CompilationError::ParseError(format!(
                 "Unexpected rule in type_annotation: {:?}",
                 inner_rule.as_rule()

@@ -197,8 +197,8 @@ pub enum Expr {
     Literal { value: Literal, ty: TypeId },
     /// Function call.
     Call {
-        /// Name of the callee function.
-        callee: String,
+        /// Callee expression (any expression that evaluates to a callable type).
+        callee: Box<Expr>,
         /// Arguments passed to the function.
         args: Vec<Expr>,
         /// Inferred return type.

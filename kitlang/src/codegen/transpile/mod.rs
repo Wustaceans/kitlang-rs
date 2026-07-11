@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use crate::codegen::ast::{Attributed, Block, Expr, Function, GlobalDecl, Program, Stmt};
 use crate::codegen::module::{ModulePath, ModuleRegistry};
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
+use crate::codegen::parser::expr_pratt::callee_name;
+use crate::codegen::type_ast::FieldInit;
 use crate::codegen::types::{ToCRepr, Type, TypeId};
 
 use super::ast::Param;
@@ -125,9 +127,9 @@ impl CodegenCtx<'_> {
             | Expr::StructInit { ty, .. }
             | Expr::FieldAccess { ty, .. }
             | Expr::EnumVariant { ty, .. }
-            | Expr::EnumInit { ty, .. } => *ty,
-            Expr::ArrayLiteral { ty, .. } => *ty,
-            Expr::Index { ty, .. } => *ty,
+            | Expr::EnumInit { ty, .. }
+            | Expr::ArrayLiteral { ty, .. }
+            | Expr::Index { ty, .. } => *ty,
             Expr::RangeLiteral { .. } => TypeId::default(),
         }
     }
@@ -403,6 +405,25 @@ impl CodegenCtx<'_> {
         self.format_function_params_with_module(params, &self.current_module)
     }
 
+    /// Format a type with a variable name, handling function-pointer declarator syntax.
+    /// Function/ptr-to-function types need `ret (*name)(params)` instead of `ret(*)(params) name`.
+    fn format_type_with_name(&self, ty: &Type, name: &str, module: &ModulePath) -> String {
+        if let Some(fp) = self.format_fn_ptr_param(ty, name, module) {
+            fp
+        } else {
+            // Resolve typedef aliases so the variable uses the underlying C type name.
+            let resolved = self
+                .inferencer
+                .store
+                .resolve_typedef_type(ty)
+                .unwrap_or_else(|| ty.clone());
+            format!(
+                "{} {name}",
+                self.type_to_c_name_with_module(&resolved, module)
+            )
+        }
+    }
+
     /// Format a variable declaration with proper C syntax.
     ///
     /// For CArray types (e.g., `CArray(Int, 3)`), this produces `int name[3]` instead of the
@@ -414,6 +435,7 @@ impl CodegenCtx<'_> {
                 let elem_c_name = self.type_to_c_name(&elem_type);
                 format!("{elem_c_name} {name}[{size}]")
             }
+            Ok(ref ty) => self.format_type_with_name(ty, name, &self.current_module),
             _ => {
                 let ty_str = self.resolve_type_to_c_name(type_id, "int");
                 format!("{ty_str} {name}")
@@ -425,6 +447,13 @@ impl CodegenCtx<'_> {
         params
             .iter()
             .map(|p| {
+                // C requires function pointer parameters to embed the name in
+                // the declarator: `ret (*name)(params)` instead of `ret(*)(params) name`.
+                if let Ok(ty) = self.inferencer.store.resolve(p.ty)
+                    && let Some(fp) = self.format_fn_ptr_param(&ty, &p.name, module)
+                {
+                    return fp;
+                }
                 format!(
                     "{} {}",
                     self.format_function_param_type_with_module(p, module),
@@ -433,6 +462,30 @@ impl CodegenCtx<'_> {
             })
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    /// If `ty` is a function type or pointer-to-function type, format it as a C
+    /// function pointer parameter declaration (`ret (*name)(params)`). Returns
+    /// `None` for non-function types.
+    fn format_fn_ptr_param(&self, ty: &Type, name: &str, module: &ModulePath) -> Option<String> {
+        let (ret_ty, param_tys) = match ty {
+            Type::Function { param_tys, ret_ty } => (ret_ty.as_ref(), param_tys.as_slice()),
+            Type::Ptr(inner) if matches!(inner.as_ref(), Type::Function { .. }) => {
+                if let Type::Function { param_tys, ret_ty } = inner.as_ref() {
+                    (ret_ty.as_ref(), param_tys.as_slice())
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+        let ret_c = self.type_to_c_name_with_module(ret_ty, module);
+        let params_c = param_tys
+            .iter()
+            .map(|t| self.type_to_c_name_with_module(t, module))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!("{ret_c} (*{name})({params_c})"))
     }
 
     fn mangled_enum_variant(&self, enum_name: &str, variant_name: &str) -> String {
@@ -453,14 +506,138 @@ impl CodegenCtx<'_> {
         }
     }
 
+    fn transpile_call(&self, callee: &Expr, args: &[Expr]) -> String {
+        if let Some(name) = callee_name(callee) {
+            self.transpile_named_call(&name, args)
+        } else {
+            let callee_c = self.transpile_expr(callee);
+            let a = args
+                .iter()
+                .map(|a| self.transpile_expr(a))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({})({})", callee_c, a)
+        }
+    }
+
+    fn transpile_named_call(&self, name: &str, args: &[Expr]) -> String {
+        if let Some(info) = self
+            .inferencer
+            .symbols()
+            .lookup_enum_variant_by_simple_name(name)
+        {
+            let a = args
+                .iter()
+                .map(|a| self.transpile_expr(a))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ctor =
+                mangle_enum_variant(&self.current_module, &info.enum_name, &info.variant_name);
+            return format!("{}_new({})", ctor, a);
+        }
+        let (mod_path, base_name) = if let Some((mp, bn)) = self.resolve_function_name(name) {
+            (Some(mp), bn)
+        } else {
+            let last = name.rsplit('.').next().unwrap_or(name);
+            (None, last.to_string())
+        };
+        let mangled = if name == "main" {
+            name.to_string()
+        } else if let Some(mp) = &mod_path {
+            if has_no_mangle_in_module!(self.registry, mp, base_name.as_str(), functions) {
+                base_name
+            } else {
+                mangle_name(mp, &base_name)
+            }
+        } else if self.inferencer.symbols().lookup_function(name).is_some()
+            && !self.current_module.is_empty()
+        {
+            mangle_name(&self.current_module, name)
+        } else {
+            name.to_string()
+        };
+        let a = args
+            .iter()
+            .map(|a| self.transpile_expr(a))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{mangled}({a})")
+    }
+
+    fn transpile_field_access(&self, expr: &Expr, field_name: &str) -> String {
+        let container = self.transpile_expr(expr);
+        let container_ty = Self::expr_type_id(expr);
+
+        if let Ok(Type::Named(type_name)) = self.inferencer.store.resolve(container_ty)
+            && let Some(enum_def) = self.inferencer.symbols().lookup_enum(&type_name)
+            && let Some(variant) = enum_def
+                .variants
+                .iter()
+                .find(|v| !v.args.is_empty() && v.args.iter().any(|a| a.name == *field_name))
+        {
+            return format!(
+                "{}._variant.{}.{}",
+                container,
+                variant.name.to_lowercase(),
+                field_name
+            );
+        }
+        format!("{}.{}", container, field_name)
+    }
+
+    fn transpile_array_literal(&self, ty: TypeId, elements: &[Expr]) -> String {
+        let array_c_name = self
+            .inferencer
+            .store
+            .resolve(ty)
+            .ok()
+            .map(|t| self.type_to_c_name(&t))
+            .unwrap_or_else(|| "int[]".to_string());
+        let elems = elements
+            .iter()
+            .map(|e| self.transpile_expr(e))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("({array_c_name}){{{elems}}}")
+    }
+
+    fn transpile_struct_init(&self, ty: TypeId, fields: &[FieldInit]) -> String {
+        let name = match self.inferencer.store.resolve(ty) {
+            Ok(Type::Struct { name, .. } | Type::Named(name)) => name,
+            Ok(_) => "UNKNOWN_STRUCT".to_string(),
+            Err(e) => {
+                eprintln!("Warning: Failed to resolve struct type: {e}");
+                "UNKNOWN_STRUCT".to_string()
+            }
+        };
+        let mangled = mangle_name(&self.current_module, &name);
+        let inits = fields
+            .iter()
+            .map(|f| format!(".{} = {}", f.name, self.transpile_expr(&f.value)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("(struct {mangled}){{{inits}}}")
+    }
+
     fn transpile_expr(&self, expr: &Expr) -> String {
         match expr {
             Expr::Identifier { name, .. } => {
                 if let Some(mod_path) = self.find_global_module(name) {
+                    // Global variable reference.
                     if has_no_mangle_in_module!(self.registry, &mod_path, name.as_str(), globals) {
                         name.clone()
                     } else {
                         mangle_name(&mod_path, name)
+                    }
+                } else if let Some((mp, bn)) = self.resolve_function_name(name)
+                    && self.inferencer.symbols().lookup_function(&bn).is_some()
+                {
+                    // Function reference used as a value (e.g. `g(f)`).
+                    // Reuse the call-path mangling for cross-module correctness + no_mangle.
+                    if has_no_mangle_in_module!(self.registry, &mp, bn.as_str(), functions) {
+                        bn
+                    } else {
+                        mangle_name(&mp, &bn)
                     }
                 } else {
                     name.clone()
@@ -472,66 +649,7 @@ impl CodegenCtx<'_> {
                 });
                 lit.to_c_with_float(is_c_float)
             }
-            Expr::Call { callee, args, .. } => {
-                if let Some(info) = self
-                    .inferencer
-                    .symbols()
-                    .lookup_enum_variant_by_simple_name(callee)
-                {
-                    let a = args
-                        .iter()
-                        .map(|a| self.transpile_expr(a))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let ctor = mangle_enum_variant(
-                        &self.current_module,
-                        &info.enum_name,
-                        &info.variant_name,
-                    );
-                    format!("{}_new({})", ctor, a)
-                } else {
-                    // XXX: name resolution cascade - qualified name -> module-scoped -> bare (C interop)
-                    let (mod_path, base_name) =
-                        if let Some((mp, bn)) = self.resolve_function_name(callee) {
-                            (Some(mp), bn)
-                        } else {
-                            let last = callee.rsplit('.').next().unwrap_or(callee);
-                            (None, last.to_string())
-                        };
-
-                    // XXX: 5-condition mangling ladder:
-                    // 1. main is never mangled
-                    // 2. extern/expose items skip mangling
-                    // 3. known functions in non-empty module get module prefix
-                    // 4. everything else passes through as-is (C interop)
-                    let mangled = if callee == "main" {
-                        callee.clone()
-                    } else if let Some(mp) = mod_path {
-                        if has_no_mangle_in_module!(
-                            self.registry,
-                            &mp,
-                            base_name.as_str(),
-                            functions
-                        ) {
-                            base_name.clone()
-                        } else {
-                            mangle_name(&mp, &base_name)
-                        }
-                    } else if self.inferencer.symbols().lookup_function(callee).is_some()
-                        && !self.current_module.is_empty()
-                    {
-                        mangle_name(&self.current_module, callee)
-                    } else {
-                        callee.clone()
-                    };
-                    let a = args
-                        .iter()
-                        .map(|a| self.transpile_expr(a))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("{mangled}({a})")
-                }
-            }
+            Expr::Call { callee, args, .. } => self.transpile_call(callee, args),
             Expr::UnaryOp { op, expr, .. } => {
                 format!("{}({})", op.to_c_str(), self.transpile_expr(expr))
             }
@@ -561,55 +679,10 @@ impl CodegenCtx<'_> {
                 format!("({c} ? {t} : {e})")
             }
             Expr::RangeLiteral { .. } => "/* range literal */ 0".to_string(),
-            Expr::StructInit {
-                ty,
-                struct_type: _,
-                fields,
-            } => {
-                let name = match self.inferencer.store.resolve(*ty) {
-                    Ok(Type::Struct { name, .. } | Type::Named(name)) => name,
-                    Ok(_) => "UNKNOWN_STRUCT".to_string(),
-                    Err(e) => {
-                        eprintln!("Warning: Failed to resolve struct type: {}", e);
-                        "UNKNOWN_STRUCT".to_string()
-                    }
-                };
-                let mangled = mangle_name(&self.current_module, &name);
-                let inits = fields
-                    .iter()
-                    .map(|f| format!(".{} = {}", f.name, self.transpile_expr(&f.value)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("(struct {}){{{}}}", mangled, inits)
-            }
+            Expr::StructInit { ty, fields, .. } => self.transpile_struct_init(*ty, fields),
             Expr::FieldAccess {
                 expr, field_name, ..
-            } => {
-                let container = self.transpile_expr(expr);
-                let container_ty = Self::expr_type_id(expr);
-
-                // Try to resolve the inferred type of the container expression
-                if let Ok(Type::Named(type_name)) = self.inferencer.store.resolve(container_ty)
-                // We only care about named types (structs/enums), not primitives or generics
-                && let Some(enum_def) = self.inferencer.symbols().lookup_enum(&type_name)
-                // Ensure the named type is actually an enum in our symbol table
-                // and retrieve its definition
-                && let Some(variant) = enum_def.variants.iter().find(|v| {
-                    // Look for a variant that has at least one field/argument
-                    // and where any of those fields match the requested field name
-                    !v.args.is_empty() && v.args.iter().any(|a| a.name == *field_name)
-                }) {
-                    // If we found a matching enum variant + field, build a fully qualified access path:
-                    // container -> variant (lowercased) -> field
-                    return format!(
-                        "{}._variant.{}.{}",
-                        container,
-                        variant.name.to_lowercase(),
-                        field_name
-                    );
-                }
-                format!("{}.{}", container, field_name)
-            }
+            } => self.transpile_field_access(expr, field_name),
             Expr::Index { expr, index, .. } => {
                 let container = self.transpile_expr(expr);
                 let idx = self.transpile_expr(index);
@@ -626,24 +699,7 @@ impl CodegenCtx<'_> {
                 variant_name,
                 ..
             } => self.mangled_enum_variant(enum_name, variant_name),
-            Expr::ArrayLiteral { elements, ty } => {
-                // Resolve the array type to get the element type name for the compound literal
-                let array_c_name = self
-                    .inferencer
-                    .store
-                    .resolve(*ty)
-                    .ok()
-                    .map(|t| self.type_to_c_name(&t))
-                    .unwrap_or_else(|| "int[]".to_string());
-
-                // Construct the compound literal
-                let elems = elements
-                    .iter()
-                    .map(|e| self.transpile_expr(e))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("({array_c_name}){{{elems}}}")
-            }
+            Expr::ArrayLiteral { elements, ty } => self.transpile_array_literal(*ty, elements),
             Expr::EnumInit {
                 enum_name,
                 variant_name,

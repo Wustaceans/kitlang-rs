@@ -4,7 +4,7 @@ use crate::codegen::ast::Attributed;
 use crate::codegen::module::ModulePath;
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
 use crate::codegen::type_ast::{EnumDefinition, EnumVariant, Field, StructDefinition};
-use crate::codegen::types::{ToCRepr, Type};
+use crate::codegen::types::Type;
 
 use super::CodegenCtx;
 
@@ -34,9 +34,9 @@ impl CodegenCtx<'_> {
             .iter()
             .map(|field| {
                 let ty = self.resolve_field_type(field);
+                let formatted = self.format_type_with_name(&ty, &field.name, &self.current_module);
                 let prefix = if field.is_const { "const " } else { "" };
-                let cname = self.type_to_c_name(&ty);
-                format!("    {}{} {};", prefix, cname, field.name)
+                format!("    {}{};", prefix, formatted)
             })
             .collect();
 
@@ -127,7 +127,10 @@ impl CodegenCtx<'_> {
                 .iter()
                 .map(|arg| {
                     let ty = self.resolve_field_type(arg);
-                    format!("    {} {};", ty.to_c_repr().name, arg.name)
+                    format!(
+                        "    {};",
+                        self.format_type_with_name(&ty, &arg.name, &self.current_module)
+                    )
                 })
                 .collect();
             let _ = write!(
@@ -178,7 +181,7 @@ impl CodegenCtx<'_> {
                 .iter()
                 .map(|arg| {
                     let ty = self.resolve_field_type(arg);
-                    format!("{} {}", ty.to_c_repr().name, arg.name)
+                    self.format_type_with_name(&ty, &arg.name, &self.current_module)
                 })
                 .collect();
             let arg_names: Vec<String> = v.args.iter().map(|arg| arg.name.clone()).collect();
