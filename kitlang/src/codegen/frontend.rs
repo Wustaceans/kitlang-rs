@@ -168,9 +168,9 @@ fn walk_kit_files(dir: &Path, base_path: &ModulePath, results: &mut Vec<ModulePa
 
 /// Resolve an import statement to concrete module paths.
 ///
-/// `Single` returns the module path itself.
-/// `Wildcard` (`.*`) returns all `.kit` files in the module's directory.
-/// `DoubleWildcard` (`.**`) returns all `.kit` files recursively.
+/// - `Single` returns the module path itself.
+/// - `Wildcard` (`.*`) returns all `.kit` files in the module's directory.
+/// - `DoubleWildcard` (`.**`) returns all `.kit` files recursively.
 fn resolve_wildcard_import(
     path: &ModulePath,
     import_type: ImportType,
@@ -340,9 +340,9 @@ fn resolve_preludes(
 
 /// Load a module and all its dependencies recursively into the registry.
 ///
-/// Errors from module parsing are tracked in `registry.failed` to prevent
-/// cascading "dependency not found" errors. Import loading uses error accumulation
-/// (like the Haskell compiler's `forMWithErrors`) to report all failures at once.
+/// Errors from module parsing are tracked in `registry.failed` to prevent cascading "dependency
+/// not found" errors. Import loading uses error accumulation (like the Haskell compiler's for
+/// `forMWithErrors`) to report all failures at once.
 fn load_module_recursive(
     file: &Path,
     source_paths: &[(PathBuf, ModulePath)],
@@ -367,12 +367,14 @@ fn load_module_recursive(
         let module_path = determine_module_path(file, source_paths);
         registry.failed.insert(module_path);
     })?;
+
     let ParsedFile {
         includes,
         imports,
         program,
         usings,
     } = parsed;
+
     let module_path = determine_module_path(file, source_paths);
 
     // Load preludes first (following Haskell compiler convention).

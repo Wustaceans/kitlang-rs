@@ -79,6 +79,9 @@ impl TypeInferencer {
             if let Some(init_expr) = &mut global.init {
                 let init_ty = self.infer_expr(init_expr)?;
 
+                // Check if global has type annotation
+                // If annotated, unify annotation with inferred type from initializer
+                // and use annotation type as result (enforces type from annotation)
                 global.inferred = if let Some(ann) = &global.annotation {
                     let ann_ty = self.store.new_known(ann.clone());
                     self.unify(ann_ty, init_ty)?;
@@ -91,9 +94,14 @@ impl TypeInferencer {
                 self.symbols.define_global(&global.name, global.inferred);
             } else if let Some(ann) = &global.annotation {
                 // Declaration without initializer -> just use annotation
+                // Example: const int x;
+                // No expression to infer type from, so we directly use the annotation
                 global.inferred = self.store.new_known(ann.clone());
                 self.symbols.define_global(&global.name, global.inferred);
             } else {
+                // The Kit grammar allows both `:` type_annotation and `= expr` to be
+                // absent independently (e.g. `var x;`), but without either there is no
+                // way to determine the variable's type, so this is a semantic error.
                 return Err(type_err!(
                     "Global variable '{}' declared without type annotation or initializer",
                     global.name
