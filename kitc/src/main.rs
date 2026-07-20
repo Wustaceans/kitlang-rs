@@ -30,6 +30,19 @@ enum Commands {
         #[arg(short, long)]
         libs: Vec<String>,
 
+        /// Additional C compiler flags (e.g. "-O2 -g").
+        /// Translated to the target toolchain; output stays C99-compatible.
+        #[arg(long)]
+        cflags: Vec<String>,
+
+        /// Additional library search paths (can be repeated).
+        #[arg(long = "lib-path")]
+        lib_paths: Vec<String>,
+
+        /// Override the C compiler executable to invoke.
+        #[arg(long = "cc")]
+        cc: Option<String>,
+
         /// Compile and immediately run the executable
         #[arg(long)]
         run: bool,
@@ -51,6 +64,9 @@ fn main() -> Result<(), Error> {
             source,
             source_paths,
             libs,
+            cflags,
+            lib_paths,
+            cc,
             run,
             measure,
         } => {
@@ -62,7 +78,15 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-            let exe_path = compile(&source, &source_paths, &libs, measure)?;
+            let exe_path = compile(
+                &source,
+                &source_paths,
+                &libs,
+                &cflags,
+                &lib_paths,
+                cc.as_deref(),
+                measure,
+            )?;
             if run {
                 run_executable(&exe_path)?;
             } else {
@@ -77,6 +101,9 @@ fn compile(
     source: &Path,
     source_paths: &[String],
     libs: &[String],
+    cflags: &[String],
+    lib_paths: &[String],
+    cc: Option<&str>,
     measure: bool,
 ) -> Result<PathBuf, String> {
     let init = time::Instant::now();
@@ -89,11 +116,12 @@ fn compile(
         &exe_path,
         libs.to_vec(),
         source_paths,
+        cflags.to_vec(),
+        lib_paths.to_vec(),
+        cc.map(PathBuf::from),
     );
 
-    compiler
-        .compile()
-        .map_err(|e| format!("failed to compile: {e}"))?;
+    compiler.compile().map_err(|e| e.render())?;
 
     if measure {
         println!("→ Compiled in {}ms", init.elapsed().as_millis());

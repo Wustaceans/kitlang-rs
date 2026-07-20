@@ -7,6 +7,7 @@ use std::slice;
 use walkdir::WalkDir;
 
 use pest::Parser;
+use pest::error::{InputLocation, LineColLocation};
 
 use crate::codegen::{
     ast::{Include, Program},
@@ -17,7 +18,7 @@ use crate::codegen::{
     transpile::{self, CodegenCtx},
     type_ast::UsingClause,
 };
-use crate::error::CompileResult;
+use crate::error::{self, CompileResult};
 use crate::{KitParser, Rule, error::CompilationError};
 
 /// The Kit compiler, orchestrating module loading, type inference, and C code generation.
@@ -29,6 +30,9 @@ pub struct Compiler {
     pub(crate) source_paths: Vec<(PathBuf, ModulePath)>,
     pub(crate) inferencer: TypeInferencer,
     pub(crate) registry: ModuleRegistry,
+    pub(crate) user_cflags: Vec<String>,
+    pub(crate) user_lib_paths: Vec<PathBuf>,
+    pub(crate) cc_override: Option<PathBuf>,
 }
 
 /// Parse a `--source-path` CLI argument into a directory and optional module prefix.
@@ -225,10 +229,29 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
     );
     let input = fs::read_to_string(file).map_err(CompilationError::Io)?;
 
-    let pairs = KitParser::parse(Rule::program, &input)
-        .map_err(|e| CompilationError::ParseError(format!("{}: {}", file.display(), e)))?;
+    let pairs = KitParser::parse(Rule::program, &input).map_err(|e| {
+        let (line, col) = match &e.line_col {
+            LineColLocation::Pos((l, c)) => (*l, *c),
+            LineColLocation::Span((l, c), _) => (*l, *c),
+        };
+        let (offset, length) = match &e.location {
+            InputLocation::Pos(pos) => (*pos, 0),
+            InputLocation::Span((start, end)) => (*start, end - start),
+        };
+        let ctx = error::ErrorContext {
+            file: file.display().to_string(),
+            source: input.clone(),
+            span: error::Span {
+                line,
+                column: col,
+                offset,
+                length,
+            },
+        };
+        CompilationError::ParseError(format!("{}: {}", file.display(), e)).with_context(ctx)
+    })?;
 
-    let parser = CodeParser::new();
+    let parser = CodeParser::new().with_source(file.display().to_string(), input.clone());
     let mut includes = Vec::new();
     let mut imports = Vec::new();
     let mut globals = Vec::new();
@@ -531,6 +554,9 @@ impl Compiler {
         output: impl AsRef<Path>,
         libs: Vec<String>,
         source_paths: &[String],
+        user_cflags: Vec<String>,
+        user_lib_paths: Vec<String>,
+        cc_override: Option<PathBuf>,
     ) -> Self {
         let mut parsed_source_paths: Vec<(PathBuf, ModulePath)> = source_paths
             .iter()
@@ -555,6 +581,9 @@ impl Compiler {
             dir
         };
 
+        let user_lib_paths_buf: Vec<PathBuf> =
+            user_lib_paths.into_iter().map(PathBuf::from).collect();
+
         Self {
             files,
             output: output_path,
@@ -563,6 +592,9 @@ impl Compiler {
             source_paths: parsed_source_paths,
             inferencer: TypeInferencer::new(),
             registry: ModuleRegistry::new(),
+            user_cflags,
+            user_lib_paths: user_lib_paths_buf,
+            cc_override,
         }
     }
 
@@ -632,8 +664,15 @@ impl Compiler {
             .map(|c_file| c_file.to_string_lossy().into_owned())
             .collect();
 
-        let (detected_toolchain, detected_path) =
-            Toolchain::executable_path().ok_or(CompilationError::ToolchainNotFound)?;
+        // Resolve the C compiler to invoke. A `--cc` override takes precedence
+        // over auto-detection; otherwise we detect a system toolchain.
+        let (detected_toolchain, detected_path) = if let Some(cc) = &self.cc_override {
+            let path = cc.clone();
+            let toolchain = Toolchain::from_path_lossy(&path);
+            (toolchain, path)
+        } else {
+            Toolchain::executable_path().ok_or(CompilationError::ToolchainNotFound)?
+        };
 
         if matches!(detected_toolchain, Toolchain::Other) {
             return Err(CompilationError::UnsupportedToolchain(
@@ -644,7 +683,8 @@ impl Compiler {
         let opts = CompilerOptions::new(CompilerMeta(detected_toolchain))
             .compiler_path(detected_path)
             .link_libs(&self.libs)
-            .lib_paths(&["/usr/local/lib"])
+            .user_cflags(&self.user_cflags)
+            .user_lib_paths(&self.user_lib_paths)
             .sources(&source_strs)
             .output(&target_path)
             .includes(slice::from_ref(&self.build_dir))

@@ -78,6 +78,17 @@ impl Toolchain {
     /// 2. Known candidates on PATH (`cl`, `cc`, `clang`, `gcc`).
     ///
     /// The returned `Toolchain` enum describes the *detected* compiler type (gcc/clang/msvc).
+    /// Detect the toolchain for a specific compiler executable path without
+    /// searching `PATH`. Used when the user supplies an explicit `--cc` override.
+    ///
+    /// Detection is filename-based (e.g. a path ending in `cl.exe` is MSVC,
+    /// `clang` is Clang, everything else is treated as GCC-compatible). Falls
+    /// back to `Gcc` for unrecognized names rather than `Other`, so that the
+    /// caller can still attempt compilation with the override.
+    pub fn from_path_lossy(path: &Path) -> Toolchain {
+        detect_toolchain::<NoSearch>(path, None)
+    }
+
     pub fn executable_path() -> Option<(Toolchain, PathBuf)> {
         // Check the CC environment variable
         if let Ok(env_cc) = env::var("CC")
@@ -157,6 +168,130 @@ impl Toolchain {
             }
         }
     }
+
+    /// The language-standard flag that guarantees a C99-compatible build for this
+    /// toolchain. User-supplied flags that would change the standard dialect are
+    /// stripped and this is re-applied (see [`translate_user_flags`]) so the
+    /// generated output always compiles as C99.
+    pub fn c99_standard_flag(&self) -> Option<&'static str> {
+        match self {
+            Toolchain::Gcc | Toolchain::Clang => Some("-std=c99"),
+            #[cfg(windows)]
+            Toolchain::Msvc => Some("/std:c11"),
+            Toolchain::Other => None,
+        }
+    }
+
+    /// Translate user-supplied C compiler flags to this toolchain while
+    /// guaranteeing a C99-compatible build.
+    ///
+    /// The compiler emits C99 source, so any user flag that would change the
+    /// language standard (GCC/Clang `-std=...`, MSVC `/std:...`) is removed and
+    /// the toolchain's C99 standard flag is re-applied last. All other flags are
+    /// normalized to the toolchain's spelling:
+    ///
+    /// - GCC/Clang `->` MSVC: `-O2`/`-O1`/`-O0` -> `/O2`/`/O1`/`Od`,
+    ///   `-g` -> `/Zi`, `-I<x>` -> `/I<x>`, `-L<x>` -> `/LIBPATH:<x>`,
+    ///   `-l<x>` -> `<x>.lib`, `-Wall` -> `/W4`.
+    /// - MSVC `->` GCC/Clang: `/O2`/`/O1`/`/Od` -> `-O2`/`-O1`/`-O0`,
+    ///   `/Zi` -> `-g`, `/I<x>` -> `-I<x>`, `/LIBPATH:<x>` -> `-L<x>`,
+    ///   `<x>.lib` -> `-l<x>`, `/W4` -> `-Wall`.
+    ///
+    /// Unknown flags are passed through unchanged. This keeps the CLI portable:
+    /// a user can write `-O2 -g` regardless of whether the system compiler is
+    /// `gcc`, `clang`, or `cl`.
+    pub fn translate_user_flags(&self, user_flags: &[String]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let is_msvc = self.is_msvc();
+        let is_unix = self.is_unix_like();
+
+        for raw in user_flags {
+            let flag = raw.trim();
+            if flag.is_empty() {
+                continue;
+            }
+
+            // Strip any standard-selection flag; we re-apply C99 at the end.
+            let is_std_flag = match self {
+                Toolchain::Gcc | Toolchain::Clang => flag.starts_with("-std="),
+                #[cfg(windows)]
+                Toolchain::Msvc => {
+                    flag.eq_ignore_ascii_case("/std:c11")
+                        || flag.eq_ignore_ascii_case("/std:c17")
+                        || flag.eq_ignore_ascii_case("/std:c99")
+                }
+                Toolchain::Other => false,
+            };
+            if is_std_flag {
+                continue;
+            }
+
+            let is_gnu_style = flag.starts_with('-');
+            if is_msvc && is_gnu_style {
+                // Compiler is MSVC but the flag is GCC/Clang-style: map it.
+                out.push(map_gnuc_to_msvc(flag));
+            } else if is_unix && !is_gnu_style {
+                // Compiler is GCC/Clang but the flag is MSVC-style: map it.
+                out.push(map_msvc_to_gnuc(flag));
+            } else {
+                out.push(flag.to_string());
+            }
+        }
+
+        // Guarantee C99 output by re-applying the standard flag last (so it wins
+        // over any user flag we may have normalized).
+        if let Some(std) = self.c99_standard_flag() {
+            out.push(std.to_string());
+        }
+        out
+    }
+}
+
+/// Map a single GCC/Clang-style flag to its MSVC equivalent. The input must
+/// already have its `-std=` flag stripped by the caller.
+fn map_gnuc_to_msvc(flag: &str) -> String {
+    match flag {
+        "-O0" => "/Od".to_string(),
+        "-O1" => "/O1".to_string(),
+        "-O2" | "-O3" | "-Os" => "/O2".to_string(),
+        "-g" => "/Zi".to_string(),
+        "-Wall" | "-Wextra" => "/W4".to_string(),
+        _ => {
+            if let Some(rest) = flag.strip_prefix("-I") {
+                format!("/I{rest}")
+            } else if let Some(rest) = flag.strip_prefix("-L") {
+                format!("/LIBPATH:{rest}")
+            } else if let Some(rest) = flag.strip_prefix("-l") {
+                format!("{rest}.lib")
+            } else {
+                flag.to_string()
+            }
+        }
+    }
+}
+
+/// Map a single MSVC-style flag to its GCC/Clang equivalent. The input must
+/// already have its `/std:` flag stripped by the caller.
+fn map_msvc_to_gnuc(flag: &str) -> String {
+    match flag {
+        "/Od" => "-O0".to_string(),
+        "/O1" => "-O1".to_string(),
+        "/O2" => "-O2".to_string(),
+        "/Zi" | "/Z7" => "-g".to_string(),
+        "/W4" | "/W3" => "-Wall".to_string(),
+        _ => {
+            let lower = flag.to_ascii_lowercase();
+            if let Some(rest) = lower.strip_prefix("/i") {
+                format!("-I{rest}")
+            } else if let Some(rest) = lower.strip_prefix("/libpath:") {
+                format!("-L{rest}")
+            } else if lower.ends_with(".lib") {
+                format!("-l{}", &lower[..lower.len() - 4])
+            } else {
+                flag.to_string()
+            }
+        }
+    }
 }
 
 /// `cc` is often a symlink to an actual compiler on the system, so
@@ -183,6 +318,11 @@ pub struct CompilerOptions {
     pub link_opts: Vec<String>,
     /// Include search paths (`-I` flags)
     pub includes: Vec<PathBuf>,
+    /// User-supplied C compiler flags (e.g. `-O2 -g`), translated to the
+    /// target toolchain and guaranteed C99-compatible by `build_invocation`.
+    pub user_cflags: Vec<String>,
+    /// Additional library search paths supplied by the user (`-L` / `/LIBPATH:`).
+    pub user_lib_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -198,6 +338,8 @@ impl CompilerOptions {
             output: None,
             link_opts: Vec::new(),
             includes: Vec::new(),
+            user_cflags: Vec::new(),
+            user_lib_paths: Vec::new(),
         }
     }
 
@@ -271,6 +413,27 @@ impl CompilerOptions {
         self
     }
 
+    /// Add user-supplied C compiler flags (e.g. `-O2`, `-g`).
+    ///
+    /// These are translated to the target toolchain by `build_invocation` and
+    /// are guaranteed not to break the C99 compatibility of the generated code.
+    pub fn user_cflags<S: AsRef<str>>(mut self, flags: &[S]) -> Self {
+        self.user_cflags
+            .extend(flags.iter().map(|f| f.as_ref().to_string()));
+        self
+    }
+
+    /// Add additional library search paths (translated per toolchain).
+    pub fn user_lib_paths<P>(mut self, paths: &[P]) -> Self
+    where
+        P: Into<PathBuf> + AsRef<OsStr>,
+    {
+        for p in paths {
+            self.user_lib_paths.push(p.into());
+        }
+        self
+    }
+
     /// Build the compiler invocation.
     ///
     /// Returns `(path_to_compiler_executable, args_vec)`.
@@ -308,7 +471,35 @@ impl CompilerOptions {
         args.push(self.toolchain.output_flag().to_string());
         args.push(out.display().to_string());
 
+        // Base C99 standard + warning flags, then any user-supplied flags
+        // (translated to this toolchain and guaranteed C99-compatible).
         args.extend(self.toolchain.get_compiler_flags());
+        args.extend(self.toolchain.translate_user_flags(&self.user_cflags));
+
+        // Library search paths: the hardcoded system default first, then any
+        // user-supplied paths (translated per toolchain).
+        match self.toolchain {
+            Toolchain::Gcc | Toolchain::Clang => {
+                args.push("-L/usr/local/lib".to_string());
+            }
+            #[cfg(windows)]
+            Toolchain::Msvc => {
+                args.push("/LIBPATH:/usr/local/lib".to_string());
+            }
+            Toolchain::Other => {}
+        }
+        for p in &self.user_lib_paths {
+            match self.toolchain {
+                Toolchain::Gcc | Toolchain::Clang => {
+                    args.push(format!("-L{}", p.display()));
+                }
+                #[cfg(windows)]
+                Toolchain::Msvc => {
+                    args.push(format!("/LIBPATH:{}", p.display()));
+                }
+                Toolchain::Other => {}
+            }
+        }
         args.extend(self.link_opts.clone());
 
         Ok((compiler_path, args))
@@ -316,5 +507,58 @@ impl CompilerOptions {
 
     pub fn build(self) -> CompilerOptions {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translate_strips_std_flag_and_reapplies_c99() {
+        let t = Toolchain::Gcc;
+        let out = t.translate_user_flags(&["-std=gnu11".to_string(), "-O2".to_string()]);
+        // The user's -std= is dropped and -std=c99 is re-applied at the end.
+        assert!(!out.contains(&"-std=gnu11".to_string()));
+        assert_eq!(out.last().map(String::as_str), Some("-std=c99"));
+        assert!(out.contains(&"-O2".to_string()));
+    }
+
+    #[test]
+    fn translate_passes_optimization_flags_through() {
+        let t = Toolchain::Clang;
+        let out = t.translate_user_flags(&["-O2".to_string(), "-g".to_string()]);
+        assert!(out.contains(&"-O2".to_string()));
+        assert!(out.contains(&"-g".to_string()));
+        assert!(out.contains(&"-std=c99".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn translate_gnu_flags_to_msvc() {
+        let t = Toolchain::Msvc;
+        let out =
+            t.translate_user_flags(&["-O2".to_string(), "-g".to_string(), "-Wall".to_string()]);
+        assert!(out.contains(&"/O2".to_string()));
+        assert!(out.contains(&"/Zi".to_string()));
+        assert!(out.contains(&"/W4".to_string()));
+        // MSVC build re-applies /std:c11 (not -std=c99).
+        assert_eq!(out.last().map(String::as_str), Some("/std:c11"));
+    }
+
+    #[test]
+    fn translate_msvc_flags_to_gnu() {
+        let t = Toolchain::Gcc;
+        let out = t.translate_user_flags(&["/O2".to_string(), "/Zi".to_string()]);
+        assert!(out.contains(&"-O2".to_string()));
+        assert!(out.contains(&"-g".to_string()));
+    }
+
+    #[test]
+    fn translate_lib_paths_and_libs() {
+        let t = Toolchain::Gcc;
+        let out = t.translate_user_flags(&["-L/some/lib".to_string(), "-lm".to_string()]);
+        assert!(out.contains(&"-L/some/lib".to_string()));
+        assert!(out.contains(&"-lm".to_string()));
     }
 }

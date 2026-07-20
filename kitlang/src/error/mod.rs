@@ -1,5 +1,43 @@
 use thiserror::Error;
 
+/// A source-code location, used to attach line/column information to compiler
+/// errors so the CLI can render a source snippet.
+#[derive(Debug, Clone, Default)]
+pub struct Span {
+    /// 1-based line number.
+    pub line: usize,
+    /// 1-based column number.
+    pub column: usize,
+    /// Byte offset of the span start within the source.
+    pub offset: usize,
+    /// Length of the span in bytes.
+    pub length: usize,
+}
+
+impl Span {
+    /// Build a `Span` from a pest `Span`.
+    pub fn from_pest(span: &pest::Span<'_>) -> Self {
+        let (line, column) = span.start_pos().line_col();
+        Self {
+            line,
+            column,
+            offset: span.start(),
+            length: span.end() - span.start(),
+        }
+    }
+}
+
+/// Optional source context attached to an error so the CLI can print a snippet.
+#[derive(Debug, Clone, Default)]
+pub struct ErrorContext {
+    /// The source file the error refers to.
+    pub file: String,
+    /// The full source text, used to render the snippet line.
+    pub source: String,
+    /// The location of the error within `source`.
+    pub span: Span,
+}
+
 pub type CompileResult<T> = Result<T, CompilationError>;
 
 #[derive(Error, Debug)]
@@ -40,8 +78,67 @@ pub enum CompilationError {
     #[error("Symbol '{name}' is private in module '{module}'")]
     PrivateSymbol { name: String, module: String },
 
+    /// Wraps another error with source context (file, text, and span) so the
+    /// CLI can render a source-code snippet. The inner error's message is
+    /// preserved via `Display`.
+    #[error("{inner}")]
+    WithContext {
+        inner: Box<CompilationError>,
+        ctx: ErrorContext,
+    },
+
     #[error(transparent)]
     Io(std::io::Error),
+}
+
+impl CompilationError {
+    /// Wrap this error with source context (file, source text, and span) so the
+    /// CLI can render a snippet. Returns the error unchanged if context is
+    /// already present (to avoid nested wrappers).
+    pub fn with_context(self, ctx: ErrorContext) -> Self {
+        if matches!(self, CompilationError::WithContext { .. }) {
+            return self;
+        }
+        CompilationError::WithContext {
+            inner: Box::new(self),
+            ctx,
+        }
+    }
+
+    /// Render the error together with a source-code snippet if context is
+    /// available. Falls back to the plain message otherwise.
+    pub fn render(&self) -> String {
+        if let CompilationError::WithContext { inner, ctx } = self {
+            let mut out = String::new();
+            let loc = if ctx.file.is_empty() {
+                format!("{}:{}:{}", "<source>", ctx.span.line, ctx.span.column)
+            } else {
+                format!("{}:{}:{}", ctx.file, ctx.span.line, ctx.span.column)
+            };
+            out.push_str(&format!("error: {inner}\n  --> {loc}\n"));
+            render_snippet(&mut out, ctx);
+            out
+        } else {
+            format!("{self}")
+        }
+    }
+}
+
+/// Append a single-line source snippet with a caret pointing at the error
+/// column to `out`.
+fn render_snippet(out: &mut String, ctx: &ErrorContext) {
+    let line_idx = ctx.span.line.saturating_sub(1);
+    let Some(line) = ctx.source.lines().nth(line_idx) else {
+        return;
+    };
+    let gutter = format!("{} | ", ctx.span.line);
+    out.push_str(&format!("{gutter}{line}\n"));
+    let pad: String = std::iter::repeat(' ')
+        .take(gutter.len() + ctx.span.column.saturating_sub(1))
+        .collect();
+    let caret_len = ctx.span.length.max(1);
+    let carets: String = std::iter::repeat('^').take(caret_len).collect();
+    out.push_str(&format!("{pad}{carets}\n"));
 }
 
 /// Helper macro to create a `CompilationError::ParseError`
@@ -58,4 +155,35 @@ macro_rules! type_err {
     ( $($arg:tt)* ) => {
         $crate::error::CompilationError::TypeError(format!($($arg)*))
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_without_context_falls_back_to_message() {
+        let err = CompilationError::ParseError("boom".to_string());
+        assert_eq!(err.render(), "Failed to parse: boom");
+    }
+
+    #[test]
+    fn render_with_context_includes_location_and_snippet() {
+        let ctx = ErrorContext {
+            file: "main.kit".to_string(),
+            source: "var x = ;\n".to_string(),
+            span: Span {
+                line: 1,
+                column: 9,
+                offset: 8,
+                length: 1,
+            },
+        };
+        let err = CompilationError::ParseError("unexpected token".to_string()).with_context(ctx);
+        let rendered = err.render();
+        assert!(rendered.contains("Failed to parse: unexpected token"));
+        assert!(rendered.contains("main.kit:1:9"));
+        assert!(rendered.contains("var x = ;"));
+        assert!(rendered.contains('^'));
+    }
 }

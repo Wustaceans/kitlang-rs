@@ -561,6 +561,9 @@ fn test_extern_c_output_contains_extern_prefix() {
         dir.join("test_extern"),
         vec![],
         &[] as &[String],
+        vec![],
+        vec![],
+        None,
     );
 
     unsafe { env::set_var("KEEP_C", "1") };

@@ -36,28 +36,63 @@ use crate::error::CompileResult;
 /// pretty rendering) are added at this single seam.
 pub(crate) struct PestExpr<'a> {
     pair: Pair<'a, Rule>,
+    /// The path of the file being parsed (used for error locations).
+    file: String,
+    /// The full source text (used to render error snippets).
+    source: String,
 }
 
 impl<'a> PestExpr<'a> {
-    /// Wrap a pest `Pair` whose rule is an expression.
-    pub(crate) fn new(pair: Pair<'a, Rule>) -> Self {
-        Self { pair }
+    /// Wrap a pest `Pair` whose rule is an expression, carrying the file path
+    /// and full source text so parse errors can carry a location + snippet.
+    pub(crate) fn new(pair: Pair<'a, Rule>, file: String, source: String) -> Self {
+        Self { pair, file, source }
     }
 
     /// Parse the wrapped pair as a Kit expression.
     pub(crate) fn parse(self) -> CompileResult<Expr> {
         let text = self.pair.as_str();
+        let span = crate::error::Span::from_pest(&self.pair.as_span());
+        let ctx = crate::error::ErrorContext {
+            file: self.file.clone(),
+            source: self.source.clone(),
+            span,
+        };
         expr_pratt::parse_kit_expr(text)
-            .map_err(|e| CompilationError::ParseError(e.to_human_message()))
+            .map_err(|e| CompilationError::ParseError(e.to_human_message()).with_context(ctx))
     }
 }
 
-#[derive(Clone, Copy, Default, Debug)]
-pub struct Parser;
+#[derive(Clone, Default, Debug)]
+pub struct Parser {
+    /// The path of the file currently being parsed, used in error locations.
+    file: String,
+    /// The full source text of the file currently being parsed. Used to attach
+    /// source snippets to errors raised while parsing expressions.
+    source: String,
+}
 
 impl Parser {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Associate the source text (and path) of the file with the parser so that
+    /// expression parse errors can carry a location and source snippet.
+    pub(crate) fn with_source(mut self, file: String, source: String) -> Self {
+        self.file = file;
+        self.source = source;
+        self
+    }
+
+    /// Build an `ErrorContext` for the given pest `Pair`, if source is known.
+    fn context_for(&self, pair: &Pair<'_, Rule>) -> crate::error::ErrorContext {
+        let span = crate::error::Span::from_pest(&pair.as_span());
+        crate::error::ErrorContext {
+            file: self.file.clone(),
+            source: self.source.clone(),
+            span,
+        }
     }
 
     /// Extract the first identifier from a pair's children (e.g., variable name, field name)
@@ -180,18 +215,11 @@ impl Parser {
         Ok(Metadata { name, args })
     }
 
-    /// Parse a `function_decl` rule into a `Function`.
     /// Parse an expression via the Pratt parser. This is the unified
     /// entry point used by every pest-side call site that needs an
     /// expression AST node.
-    ///
-    /// `Parser` is `Copy`, so we take `self` by value to match the
-    /// signature of the (now-deleted) pest-based `parse_expr`. The
-    /// caller doesn't need to mutate the parser; the Pratt parser
-    /// operates on its own `ExprParser` instance built from a token
-    /// slice derived from the `Pair`.
-    pub fn parse_expr(self, pair: Pair<Rule>) -> CompileResult<Expr> {
-        PestExpr::new(pair).parse()
+    pub fn parse_expr(&self, pair: Pair<Rule>) -> CompileResult<Expr> {
+        PestExpr::new(pair, self.file.clone(), self.source.clone()).parse()
     }
 
     pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {
@@ -322,7 +350,7 @@ impl Parser {
     }
 
     fn parse_enum_variant(
-        self,
+        &self,
         pair: Pair<Rule>,
         parent_name: String,
     ) -> CompileResult<EnumVariant> {
@@ -370,7 +398,7 @@ impl Parser {
     }
 
     /// Parse a `trait_def` rule into a `TraitDefinition`.
-    pub fn parse_trait_def(self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
+    pub fn parse_trait_def(&self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
         let mut inner = pair.into_inner();
         // First child is metadata_and_modifiers - skip it for now
         if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
@@ -401,7 +429,7 @@ impl Parser {
     }
 
     /// Parse a `trait_impl` rule into an `ImplDefinition`.
-    pub fn parse_trait_impl(self, pair: Pair<Rule>) -> CompileResult<ImplDefinition> {
+    pub fn parse_trait_impl(&self, pair: Pair<Rule>) -> CompileResult<ImplDefinition> {
         let mut inner = pair.into_inner();
         // Skip metadata_and_modifiers
         if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
@@ -435,7 +463,7 @@ impl Parser {
     }
 
     /// Parse a `rule_set` rule into a `RuleSet`.
-    pub fn parse_rule_set(self, pair: Pair<Rule>) -> CompileResult<RuleSet> {
+    pub fn parse_rule_set(&self, pair: Pair<Rule>) -> CompileResult<RuleSet> {
         let mut inner = pair.into_inner();
         let name = Self::pair_text(
             inner
@@ -451,7 +479,7 @@ impl Parser {
     }
 
     /// Parse a `rule_decl` rule into a `RuleDecl`.
-    fn parse_rule_decl(self, pair: Pair<Rule>) -> CompileResult<RuleDecl> {
+    fn parse_rule_decl(&self, pair: Pair<Rule>) -> CompileResult<RuleDecl> {
         let mut inner = pair.into_inner();
         let pattern = self.parse_expr(inner.next().ok_or(parse_error!("rule missing pattern"))?)?;
         let body = inner.next().map(|p| self.parse_expr(p)).transpose()?;
@@ -459,7 +487,7 @@ impl Parser {
     }
 
     /// Parse a `typedef_stmt` rule into a `TypeDef`.
-    pub fn parse_typedef(self, pair: Pair<Rule>) -> CompileResult<TypeDef> {
+    pub fn parse_typedef(&self, pair: Pair<Rule>) -> CompileResult<TypeDef> {
         let mut inner = pair.into_inner();
         // typedef_stmt = { "typedef" ~ identifier ~ "=" ~ type_annotation ~ ";" }
         let name = Self::pair_text(
@@ -475,7 +503,7 @@ impl Parser {
     }
 
     /// Parse a `using_stmt` rule into a `Vec<UsingClause>`.
-    pub fn parse_using(self, pair: Pair<Rule>) -> CompileResult<Vec<UsingClause>> {
+    pub fn parse_using(&self, pair: Pair<Rule>) -> CompileResult<Vec<UsingClause>> {
         // using_stmt = { "using" ~ (using_clause ~ ("," ~ using_clause)*) ~ ";" }
         let clauses: CompileResult<Vec<_>> = pair
             .into_inner()
@@ -486,7 +514,7 @@ impl Parser {
     }
 
     /// Parse a single `using_clause` rule into a `UsingClause`.
-    fn parse_using_clause(self, pair: Pair<Rule>) -> CompileResult<UsingClause> {
+    fn parse_using_clause(&self, pair: Pair<Rule>) -> CompileResult<UsingClause> {
         // using_clause = { ("rules" ~ type_annotation) | ("implicit" ~ expr) }
         // The first alternative yields a `type_annotation` child, the second yields an `expr` child.
         let mut inner = pair.into_inner();
@@ -500,7 +528,7 @@ impl Parser {
         }
     }
 
-    fn parse_struct_field(self, pair: &Pair<Rule>) -> CompileResult<Field> {
+    fn parse_struct_field(&self, pair: &Pair<Rule>) -> CompileResult<Field> {
         // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
         let name = Self::extract_first_identifier(pair.clone())
             .ok_or(parse_error!("struct field missing name"))?;
@@ -529,7 +557,7 @@ impl Parser {
         pair.into_inner().find(|p| p.as_rule() == rule)
     }
 
-    fn parse_params(self, pair: Pair<Rule>) -> CompileResult<Vec<Param>> {
+    fn parse_params(&self, pair: Pair<Rule>) -> CompileResult<Vec<Param>> {
         // param_list = { param ~ ("," ~ param )* }
         pair.into_inner()
             .filter(|p: &Pair<Rule>| p.as_rule() == Rule::param)
@@ -553,7 +581,7 @@ impl Parser {
             .collect()
     }
 
-    fn parse_param_field(self, pair: Pair<Rule>) -> CompileResult<Field> {
+    fn parse_param_field(&self, pair: Pair<Rule>) -> CompileResult<Field> {
         // param = { identifier ~ ":" ~ type_annotation ~ ( "=" ~ expr )? }
         let mut inner = pair.into_inner();
         let name = Self::pair_text(
@@ -581,7 +609,7 @@ impl Parser {
         })
     }
 
-    fn parse_block(self, pair: Pair<Rule>) -> CompileResult<Block> {
+    fn parse_block(&self, pair: Pair<Rule>) -> CompileResult<Block> {
         // block = { "{" ~ (statement)* ~ "}" }
         let stmts = pair
             .into_inner()
@@ -610,7 +638,7 @@ impl Parser {
         Ok(Block { stmts })
     }
 
-    fn parse_var_decl(self, pair: &Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_var_decl(&self, pair: &Pair<Rule>) -> CompileResult<Stmt> {
         // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
         // Note: const_kw is silently consumed (not used for var_decl statements in current implementation)
 
@@ -634,7 +662,7 @@ impl Parser {
     }
 
     /// Parse a top-level `var_decl` rule into a `GlobalDecl`.
-    pub fn parse_global_var_decl(self, pair: &Pair<Rule>) -> CompileResult<GlobalDecl> {
+    pub fn parse_global_var_decl(&self, pair: &Pair<Rule>) -> CompileResult<GlobalDecl> {
         // Extract metadata_and_modifiers, if present
         let (metadata, is_public) = match pair
             .clone()
@@ -670,7 +698,7 @@ impl Parser {
         })
     }
 
-    fn parse_type(self, pair: Pair<Rule>) -> CompileResult<Type> {
+    fn parse_type(&self, pair: Pair<Rule>) -> CompileResult<Type> {
         let inner_rule = pair
             .into_inner()
             .next()
@@ -716,7 +744,7 @@ impl Parser {
         }
     }
 
-    fn parse_expr_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_expr_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // expr_stmt = { expr ~ ";" }
         let expr_pair = pair
             .into_inner()
@@ -725,14 +753,14 @@ impl Parser {
         Ok(Stmt::Expr(self.parse_expr(expr_pair)?))
     }
 
-    fn parse_return(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_return(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // return_stmt = { "return" ~ expr? ~ ";" }
         let mut inner = pair.into_inner();
         let expr = inner.next().map(|p| self.parse_expr(p)).transpose()?;
         Ok(Stmt::Return(expr))
     }
 
-    fn parse_if_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_if_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // if_stmt = { "if" ~ expr ~ block ~ else_part? }
         // else_part = { "else" ~ (block | if_stmt) }
         let mut inner = pair.into_inner();
@@ -777,7 +805,7 @@ impl Parser {
         })
     }
 
-    fn parse_while_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_while_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // while_stmt = { "while" ~ expr ~ block }
         let mut inner = pair.into_inner();
         let cond = self.parse_expr(
@@ -793,7 +821,7 @@ impl Parser {
         Ok(Stmt::While { cond, body })
     }
 
-    fn parse_for_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_for_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
         let mut inner = pair.into_inner();
         let var = Self::pair_text(
