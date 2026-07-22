@@ -4,7 +4,7 @@ pub(crate) mod expr_pratt;
 
 use pest::iterators::Pair;
 
-use crate::error::CompilationError;
+use crate::error::{self, CompilationError, Span};
 use crate::{Rule, parse_error};
 
 use super::ast::{
@@ -20,20 +20,17 @@ use crate::error::CompileResult;
 
 /// Bridge between pest and the Pratt parser.
 ///
-/// The pest-based parser walks the grammar tree and, when it encounters
-/// an `expr` rule, hands the corresponding `Pair` off to the Pratt parser
-/// via this adapter. The adapter:
+/// The pest-based parser walks the grammar tree and, when it encounters an `expr` rule, hands the
+/// corresponding `Pair` off of to the Pratt parser via this adapter. The adapter:
 ///
 /// 1. Pulls the source text out of the `Pair` with `as_str()`.
 /// 2. Tokenizes it with the Logos lexer.
 /// 3. Parses the tokens with the Pratt parser.
-/// 4. Converts the Pratt parser's `ExprParseError` to the public
-///    `CompilationError`.
+/// 4. Converts the Pratt parser's `ExprParseError` to the public `CompilationError`
 ///
-/// This is the *only* conversion point between the two parsers; it's
-/// also the only place the public error type is built from the
-/// parser-internal one. Future diagnostic improvements (spans, severity,
-/// pretty rendering) are added at this single seam.
+/// This is the *only* conversion point between the two parsers; it's also the only place the
+/// public eror type is built from the parser-internal one. Future diagnostic improvements (spans,
+/// severity, pretty rendering) are added at this single seam.
 pub(crate) struct PestExpr<'a> {
     pair: Pair<'a, Rule>,
     /// The path of the file being parsed (used for error locations).
@@ -43,8 +40,8 @@ pub(crate) struct PestExpr<'a> {
 }
 
 impl<'a> PestExpr<'a> {
-    /// Wrap a pest `Pair` whose rule is an expression, carrying the file path
-    /// and full source text so parse errors can carry a location + snippet.
+    /// Wrap a pest `Pair` whose rule is an expression, carrying the file path and full source text
+    /// so parse errors can carry a location and snippet.
     pub(crate) fn new(pair: Pair<'a, Rule>, file: String, source: String) -> Self {
         Self { pair, file, source }
     }
@@ -52,8 +49,8 @@ impl<'a> PestExpr<'a> {
     /// Parse the wrapped pair as a Kit expression.
     pub(crate) fn parse(self) -> CompileResult<Expr> {
         let text = self.pair.as_str();
-        let span = crate::error::Span::from_pest(&self.pair.as_span());
-        let ctx = crate::error::ErrorContext {
+        let span = Span::from_pest(&self.pair.as_span());
+        let ctx = error::ErrorContext {
             file: self.file.clone(),
             source: self.source.clone(),
             span,
@@ -67,8 +64,8 @@ impl<'a> PestExpr<'a> {
 pub struct Parser {
     /// The path of the file currently being parsed, used in error locations.
     file: String,
-    /// The full source text of the file currently being parsed. Used to attach
-    /// source snippets to errors raised while parsing expressions.
+    /// The full source text of the file currently being parsed. Used to attach source snippets to
+    /// errors raised while parsing expressions.
     source: String,
 }
 
@@ -77,22 +74,26 @@ impl Parser {
         Self::default()
     }
 
-    /// Associate the source text (and path) of the file with the parser so that
-    /// expression parse errors can carry a location and source snippet.
+    /// Associate the source text (and path) of the file with the parser so that expression parse
+    /// errors can carry a location and source snippet.
     pub(crate) fn with_source(mut self, file: String, source: String) -> Self {
         self.file = file;
         self.source = source;
         self
     }
 
-    /// Build an `ErrorContext` for the given pest `Pair`, if source is known.
-    fn context_for(&self, pair: &Pair<'_, Rule>) -> crate::error::ErrorContext {
-        let span = crate::error::Span::from_pest(&pair.as_span());
-        crate::error::ErrorContext {
+    /// Build an `ErrorContext` from a raw pest span.
+    fn context_from_span(&self, span: &pest::Span<'_>) -> error::ErrorContext {
+        error::ErrorContext {
             file: self.file.clone(),
             source: self.source.clone(),
-            span,
+            span: Span::from_pest(span),
         }
+    }
+
+    /// Build an `ErrorContext` for the given pest `Pair`.
+    fn context_for(&self, pair: &Pair<'_, Rule>) -> error::ErrorContext {
+        self.context_from_span(&pair.as_span())
     }
 
     /// Extract the first identifier from a pair's children (e.g., variable name, field name)
@@ -116,10 +117,12 @@ impl Parser {
 
     /// Parse an `include` rule into an `Include`.
     pub fn parse_include(&self, pair: Pair<Rule>) -> CompileResult<Include> {
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
-        let path_literal_pair = inner
-            .next()
-            .ok_or_else(|| parse_error!("include statement missing path"))?;
+        let path_literal_pair = inner.next().ok_or_else(|| {
+            parse_error!("include statement missing path")
+                .with_context(self.context_from_span(&parent_span))
+        })?;
         let path_str = path_literal_pair.as_str();
         let path = path_str[1..path_str.len() - 1].to_string();
 
@@ -136,14 +139,16 @@ impl Parser {
 
     /// Parse an `import` rule into a `ModuleImport`, detecting single/wildcard/double-wildcard.
     pub fn parse_import(&self, pair: Pair<Rule>) -> CompileResult<ModuleImport> {
+        let parent_span = pair.as_span();
         let span = pair.as_span();
         let start = span.start();
         let end = span.end();
 
         let mut inner = pair.into_inner();
-        let import_path_pair = inner
-            .next()
-            .ok_or_else(|| parse_error!("import statement missing path"))?;
+        let import_path_pair = inner.next().ok_or_else(|| {
+            parse_error!("import statement missing path")
+                .with_context(self.context_from_span(&parent_span))
+        })?;
         let full_path_str = import_path_pair.as_str();
 
         let has_wildcard = full_path_str.ends_with(".*");
@@ -223,6 +228,7 @@ impl Parser {
     }
 
     pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
 
         // Parse metadata_and_modifiers, if present
@@ -234,10 +240,10 @@ impl Parser {
         };
 
         // Function name is always next
-        let name =
-            Self::pair_text(inner.next().ok_or_else(|| {
-                CompilationError::ParseError("function missing name".to_string())
-            })?);
+        let name = Self::pair_text(inner.next().ok_or_else(|| {
+            CompilationError::ParseError("function missing name".to_string())
+                .with_context(self.context_from_span(&parent_span))
+        })?);
 
         let mut params: Vec<Param> = Vec::new();
         let mut return_type: Option<Type> = None;
@@ -271,6 +277,7 @@ impl Parser {
         is_public: bool,
     ) -> CompileResult<StructDefinition> {
         // struct_def = { "struct" ~ identifier ~ type_params? ~ "{" ~ (var_decl)* ~ "}" }
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
 
         // First child should be the struct name (identifier)
@@ -278,7 +285,10 @@ impl Parser {
             inner
                 .next()
                 .filter(|p| p.as_rule() == Rule::identifier)
-                .ok_or(parse_error!("struct definition missing name"))?,
+                .ok_or_else(|| {
+                    parse_error!("struct definition missing name")
+                        .with_context(self.context_from_span(&parent_span))
+                })?,
         );
 
         // Skip type_params if present
@@ -315,13 +325,17 @@ impl Parser {
         metadata: Vec<Metadata>,
         is_public: bool,
     ) -> CompileResult<EnumDefinition> {
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
 
         let name = Self::pair_text(
             inner
                 .next()
                 .filter(|p| p.as_rule() == Rule::identifier)
-                .ok_or(parse_error!("enum definition missing name"))?,
+                .ok_or_else(|| {
+                    parse_error!("enum definition missing name")
+                        .with_context(self.context_from_span(&parent_span))
+                })?,
         );
 
         while let Some(peek) = inner.peek() {
@@ -354,6 +368,7 @@ impl Parser {
         pair: Pair<Rule>,
         parent_name: String,
     ) -> CompileResult<EnumVariant> {
+        let span = pair.as_span();
         let mut inner = pair.into_inner();
         let (metadata, _is_public) = Self::parse_metadata_and_modifiers(inner.next());
 
@@ -379,7 +394,9 @@ impl Parser {
             }
         }
 
-        let name = identifier_found.ok_or(parse_error!("enum variant missing name"))?;
+        let name = identifier_found.ok_or_else(|| {
+            parse_error!("enum variant missing name").with_context(self.context_from_span(&span))
+        })?;
 
         // If there's a variant-level default, apply it to the last argument
         if let Some(default_expr) = variant_default
@@ -399,6 +416,7 @@ impl Parser {
 
     /// Parse a `trait_def` rule into a `TraitDefinition`.
     pub fn parse_trait_def(&self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
         // First child is metadata_and_modifiers - skip it for now
         if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
@@ -408,7 +426,10 @@ impl Parser {
             inner
                 .next()
                 .filter(|p| p.as_rule() == Rule::identifier)
-                .ok_or(parse_error!("trait definition missing name"))?,
+                .ok_or_else(|| {
+                    parse_error!("trait definition missing name")
+                        .with_context(self.context_from_span(&parent_span))
+                })?,
         );
         // Skip type_params and trait params for now
         while inner.peek().is_some()
@@ -430,16 +451,16 @@ impl Parser {
 
     /// Parse a `trait_impl` rule into an `ImplDefinition`.
     pub fn parse_trait_impl(&self, pair: Pair<Rule>) -> CompileResult<ImplDefinition> {
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
         // Skip metadata_and_modifiers
         if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
             let _ = inner.next();
         }
-        let trait_type = self.parse_type(
-            inner
-                .next()
-                .ok_or(parse_error!("trait impl missing trait type"))?,
-        )?;
+        let trait_type = self.parse_type(inner.next().ok_or_else(|| {
+            parse_error!("trait impl missing trait type")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
         // Skip type_params
         while let Some(peek) = inner.peek()
             && peek.as_rule() == Rule::type_params
@@ -447,11 +468,10 @@ impl Parser {
             let _ = inner.next();
         }
         // Skip "for" keyword - not a named rule, consumed implicitly
-        let for_type = self.parse_type(
-            inner
-                .next()
-                .ok_or(parse_error!("trait impl missing 'for' type"))?,
-        )?;
+        let for_type = self.parse_type(inner.next().ok_or_else(|| {
+            parse_error!("trait impl missing 'for' type")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
         // TODO: For now, return a simple placeholder
         Ok(ImplDefinition {
             name: String::new(),
@@ -464,12 +484,16 @@ impl Parser {
 
     /// Parse a `rule_set` rule into a `RuleSet`.
     pub fn parse_rule_set(&self, pair: Pair<Rule>) -> CompileResult<RuleSet> {
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
         let name = Self::pair_text(
             inner
                 .next()
                 .filter(|p| p.as_rule() == Rule::identifier)
-                .ok_or(parse_error!("rule set missing name"))?,
+                .ok_or_else(|| {
+                    parse_error!("rule set missing name")
+                        .with_context(self.context_from_span(&parent_span))
+                })?,
         );
         let rules: Vec<RuleDecl> = inner
             .filter(|p| p.as_rule() == Rule::rule_decl)
@@ -480,24 +504,26 @@ impl Parser {
 
     /// Parse a `rule_decl` rule into a `RuleDecl`.
     fn parse_rule_decl(&self, pair: Pair<Rule>) -> CompileResult<RuleDecl> {
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
-        let pattern = self.parse_expr(inner.next().ok_or(parse_error!("rule missing pattern"))?)?;
+        let pattern = self.parse_expr(inner.next().ok_or_else(|| {
+            parse_error!("rule missing pattern").with_context(self.context_from_span(&parent_span))
+        })?)?;
         let body = inner.next().map(|p| self.parse_expr(p)).transpose()?;
         Ok(RuleDecl { pattern, body })
     }
 
     /// Parse a `typedef_stmt` rule into a `TypeDef`.
     pub fn parse_typedef(&self, pair: Pair<Rule>) -> CompileResult<TypeDef> {
+        let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
         // typedef_stmt = { "typedef" ~ identifier ~ "=" ~ type_annotation ~ ";" }
-        let name = Self::pair_text(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("typedef missing name"))?,
-        );
-        let type_pair = inner
-            .next()
-            .ok_or_else(|| parse_error!("typedef missing type"))?;
+        let name = Self::pair_text(inner.next().ok_or_else(|| {
+            parse_error!("typedef missing name").with_context(self.context_from_span(&parent_span))
+        })?);
+        let type_pair = inner.next().ok_or_else(|| {
+            parse_error!("typedef missing type").with_context(self.context_from_span(&parent_span))
+        })?;
         let type_def = self.parse_type(type_pair)?;
         Ok(TypeDef { name, type_def })
     }
@@ -515,12 +541,13 @@ impl Parser {
 
     /// Parse a single `using_clause` rule into a `UsingClause`.
     fn parse_using_clause(&self, pair: Pair<Rule>) -> CompileResult<UsingClause> {
+        let parent_span = pair.as_span();
         // using_clause = { ("rules" ~ type_annotation) | ("implicit" ~ expr) }
         // The first alternative yields a `type_annotation` child, the second yields an `expr` child.
         let mut inner = pair.into_inner();
-        let child = inner
-            .next()
-            .ok_or_else(|| parse_error!("using clause is empty"))?;
+        let child = inner.next().ok_or_else(|| {
+            parse_error!("using clause is empty").with_context(self.context_from_span(&parent_span))
+        })?;
         if child.as_rule() == Rule::type_annotation {
             Ok(UsingClause::RuleSet(self.parse_type(child)?))
         } else {
@@ -530,8 +557,9 @@ impl Parser {
 
     fn parse_struct_field(&self, pair: &Pair<Rule>) -> CompileResult<Field> {
         // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
-        let name = Self::extract_first_identifier(pair.clone())
-            .ok_or(parse_error!("struct field missing name"))?;
+        let name = Self::extract_first_identifier(pair.clone()).ok_or_else(|| {
+            parse_error!("struct field missing name").with_context(self.context_for(pair))
+        })?;
 
         let is_const = Self::is_const_var_decl(pair);
 
@@ -558,19 +586,20 @@ impl Parser {
     }
 
     fn parse_params(&self, pair: Pair<Rule>) -> CompileResult<Vec<Param>> {
+        let parent_span = pair.as_span();
         // param_list = { param ~ ("," ~ param )* }
         pair.into_inner()
             .filter(|p: &Pair<Rule>| p.as_rule() == Rule::param)
             .map(|p: Pair<Rule>| {
                 let mut inner = p.into_inner();
-                let name = Self::pair_text(
-                    inner
-                        .next()
-                        .ok_or_else(|| parse_error!("param missing name"))?,
-                );
-                let type_node = inner
-                    .next()
-                    .ok_or_else(|| parse_error!("param missing type"))?;
+                let name = Self::pair_text(inner.next().ok_or_else(|| {
+                    parse_error!("param missing name")
+                        .with_context(self.context_from_span(&parent_span))
+                })?);
+                let type_node = inner.next().ok_or_else(|| {
+                    parse_error!("param missing type")
+                        .with_context(self.context_from_span(&parent_span))
+                })?;
                 let ty_ann = self.parse_type(type_node)?;
                 Ok(Param {
                     name,
@@ -582,16 +611,17 @@ impl Parser {
     }
 
     fn parse_param_field(&self, pair: Pair<Rule>) -> CompileResult<Field> {
+        let parent_span = pair.as_span();
         // param = { identifier ~ ":" ~ type_annotation ~ ( "=" ~ expr )? }
         let mut inner = pair.into_inner();
-        let name = Self::pair_text(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("param field missing name"))?,
-        );
-        let type_node = inner
-            .next()
-            .ok_or_else(|| parse_error!("param field missing type annotation"))?;
+        let name = Self::pair_text(inner.next().ok_or_else(|| {
+            parse_error!("param field missing name")
+                .with_context(self.context_from_span(&parent_span))
+        })?);
+        let type_node = inner.next().ok_or_else(|| {
+            parse_error!("param field missing type annotation")
+                .with_context(self.context_from_span(&parent_span))
+        })?;
         let ty_ann = self.parse_type(type_node)?;
 
         // Check for optional default expression
@@ -610,16 +640,17 @@ impl Parser {
     }
 
     fn parse_block(&self, pair: Pair<Rule>) -> CompileResult<Block> {
+        let parent_span = pair.as_span();
         // block = { "{" ~ (statement)* ~ "}" }
         let stmts = pair
             .into_inner()
             // grammar gives us a wrapper Rule::statement
             .filter(|p: &Pair<Rule>| p.as_rule() == Rule::statement)
             .map(|stmt_pair: Pair<Rule>| {
-                let inner = stmt_pair
-                    .into_inner()
-                    .next()
-                    .ok_or_else(|| parse_error!("statement wrapper is empty"))?;
+                let inner = stmt_pair.into_inner().next().ok_or_else(|| {
+                    parse_error!("statement wrapper is empty")
+                        .with_context(self.context_from_span(&parent_span))
+                })?;
                 match inner.as_rule() {
                     Rule::var_decl => self.parse_var_decl(&inner),
                     Rule::expr_stmt => self.parse_expr_stmt(inner),
@@ -642,8 +673,9 @@ impl Parser {
         // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
         // Note: const_kw is silently consumed (not used for var_decl statements in current implementation)
 
-        let name = Self::extract_first_identifier(pair.clone())
-            .ok_or(parse_error!("var_decl missing identifier"))?;
+        let name = Self::extract_first_identifier(pair.clone()).ok_or_else(|| {
+            parse_error!("var_decl missing identifier").with_context(self.context_for(pair))
+        })?;
 
         let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
             .map(|p| self.parse_type(p))
@@ -674,8 +706,9 @@ impl Parser {
         };
 
         // Parse a global variable or constant declaration at module level
-        let name = Self::extract_first_identifier(pair.clone())
-            .ok_or(parse_error!("global var_decl missing identifier"))?;
+        let name = Self::extract_first_identifier(pair.clone()).ok_or_else(|| {
+            parse_error!("global var_decl missing identifier").with_context(self.context_for(pair))
+        })?;
 
         let is_const = Self::is_const_var_decl(pair);
 
@@ -699,25 +732,29 @@ impl Parser {
     }
 
     fn parse_type(&self, pair: Pair<Rule>) -> CompileResult<Type> {
-        let inner_rule = pair
-            .into_inner()
-            .next()
-            .ok_or_else(|| parse_error!("type annotation is empty"))?;
+        let parent_span = pair.as_span();
+        let inner_rule = pair.into_inner().next().ok_or_else(|| {
+            parse_error!("type annotation is empty")
+                .with_context(self.context_from_span(&parent_span))
+        })?;
         match inner_rule.as_rule() {
             Rule::base_type => {
                 let mut inner_base_type = inner_rule.into_inner();
                 let base_name = inner_base_type
                     .next()
-                    .ok_or_else(|| parse_error!("base type is empty"))?
+                    .ok_or_else(|| {
+                        parse_error!("base type is empty")
+                            .with_context(self.context_from_span(&parent_span))
+                    })?
                     .as_str()
                     .trim();
                 Ok(Type::from_kit(base_name))
             }
             Rule::pointer_type => {
-                let inner_ptr_type = inner_rule
-                    .into_inner()
-                    .next()
-                    .ok_or_else(|| parse_error!("pointer type is empty"))?;
+                let inner_ptr_type = inner_rule.into_inner().next().ok_or_else(|| {
+                    parse_error!("pointer type is empty")
+                        .with_context(self.context_from_span(&parent_span))
+                })?;
                 let inner_ty = self.parse_type(inner_ptr_type)?;
                 Ok(Type::Ptr(Box::new(inner_ty)))
             }
@@ -726,9 +763,10 @@ impl Parser {
                 // All type_annotation pairs from the params (zero or more),
                 // followed by the return type as the last pair.
                 let mut type_pairs: Vec<Pair<Rule>> = inner.collect();
-                let ret_pair = type_pairs
-                    .pop()
-                    .ok_or_else(|| parse_error!("function_type missing return type"))?;
+                let ret_pair = type_pairs.pop().ok_or_else(|| {
+                    parse_error!("function_type missing return type")
+                        .with_context(self.context_from_span(&parent_span))
+                })?;
                 let ret_ty = self.parse_type(ret_pair)?;
                 let param_tys: Result<Vec<Type>, CompilationError> =
                     type_pairs.into_iter().map(|p| self.parse_type(p)).collect();
@@ -745,11 +783,12 @@ impl Parser {
     }
 
     fn parse_expr_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+        let parent_span = pair.as_span();
         // expr_stmt = { expr ~ ";" }
-        let expr_pair = pair
-            .into_inner()
-            .next()
-            .ok_or_else(|| parse_error!("expression statement is empty"))?;
+        let expr_pair = pair.into_inner().next().ok_or_else(|| {
+            parse_error!("expression statement is empty")
+                .with_context(self.context_from_span(&parent_span))
+        })?;
         Ok(Stmt::Expr(self.parse_expr(expr_pair)?))
     }
 
@@ -761,27 +800,26 @@ impl Parser {
     }
 
     fn parse_if_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+        let parent_span = pair.as_span();
         // if_stmt = { "if" ~ expr ~ block ~ else_part? }
         // else_part = { "else" ~ (block | if_stmt) }
         let mut inner = pair.into_inner();
-        let cond = self.parse_expr(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("if statement missing condition"))?,
-        )?;
-        let then_branch = self.parse_block(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("if statement missing then branch"))?,
-        )?;
+        let cond = self.parse_expr(inner.next().ok_or_else(|| {
+            parse_error!("if statement missing condition")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
+        let then_branch = self.parse_block(inner.next().ok_or_else(|| {
+            parse_error!("if statement missing then branch")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
 
         let mut else_branch = None;
         if let Some(else_pair) = inner.next() {
             debug_assert_eq!(else_pair.as_rule(), Rule::else_part);
-            let else_content = else_pair
-                .into_inner()
-                .next()
-                .ok_or_else(|| parse_error!("else part is empty"))?;
+            let else_content = else_pair.into_inner().next().ok_or_else(|| {
+                parse_error!("else part is empty")
+                    .with_context(self.context_from_span(&parent_span))
+            })?;
             let else_block = match else_content.as_rule() {
                 Rule::block => self.parse_block(else_content)?,
                 Rule::if_stmt => {
@@ -806,39 +844,36 @@ impl Parser {
     }
 
     fn parse_while_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+        let parent_span = pair.as_span();
         // while_stmt = { "while" ~ expr ~ block }
         let mut inner = pair.into_inner();
-        let cond = self.parse_expr(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("while statement missing condition"))?,
-        )?;
-        let body = self.parse_block(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("while statement missing body"))?,
-        )?;
+        let cond = self.parse_expr(inner.next().ok_or_else(|| {
+            parse_error!("while statement missing condition")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
+        let body = self.parse_block(inner.next().ok_or_else(|| {
+            parse_error!("while statement missing body")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
         Ok(Stmt::While { cond, body })
     }
 
     fn parse_for_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+        let parent_span = pair.as_span();
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
         let mut inner = pair.into_inner();
-        let var = Self::pair_text(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("for statement missing variable"))?,
-        );
-        let iter = self.parse_expr(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("for statement missing iterable"))?,
-        )?;
-        let body = self.parse_block(
-            inner
-                .next()
-                .ok_or_else(|| parse_error!("for statement missing body"))?,
-        )?;
+        let var = Self::pair_text(inner.next().ok_or_else(|| {
+            parse_error!("for statement missing variable")
+                .with_context(self.context_from_span(&parent_span))
+        })?);
+        let iter = self.parse_expr(inner.next().ok_or_else(|| {
+            parse_error!("for statement missing iterable")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
+        let body = self.parse_block(inner.next().ok_or_else(|| {
+            parse_error!("for statement missing body")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
         Ok(Stmt::For { var, iter, body })
     }
 }

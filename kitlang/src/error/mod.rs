@@ -133,11 +133,10 @@ fn render_snippet(out: &mut String, ctx: &ErrorContext) {
     };
     let gutter = format!("{} | ", ctx.span.line);
     out.push_str(&format!("{gutter}{line}\n"));
-    let pad: String = std::iter::repeat(' ')
-        .take(gutter.len() + ctx.span.column.saturating_sub(1))
-        .collect();
+    let pad: String =
+        std::iter::repeat_n(' ', gutter.len() + ctx.span.column.saturating_sub(1)).collect();
     let caret_len = ctx.span.length.max(1);
-    let carets: String = std::iter::repeat('^').take(caret_len).collect();
+    let carets: String = std::iter::repeat_n('^', caret_len).collect();
     out.push_str(&format!("{pad}{carets}\n"));
 }
 
