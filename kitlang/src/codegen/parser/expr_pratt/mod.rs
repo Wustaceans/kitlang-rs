@@ -32,13 +32,12 @@
 //! The token stream carries byte ranges; the parser uses them internally but does not currently
 //! attach them to AST nodes.
 
-use crate::codegen::ast::{Expr, Literal};
-use crate::codegen::type_ast::FieldInit;
-use crate::codegen::types::{Type, TypeId};
-use crate::lexer::{LexicalError, Span, SpannedTok, Tok, tokenize};
+use crate::codegen::ast::Expr;
+use crate::codegen::types::TypeId;
+use crate::lexer::{LexicalError, SpannedTok, Tok, tokenize};
 
 use super::binding_power::{
-    infix, is_range_op, postfix, prefix, tok_to_assign_op, tok_to_binary_op, tok_to_unary_op,
+    infix, is_range_op, prefix, tok_to_assign_op, tok_to_binary_op, tok_to_unary_op,
 };
 use super::diagnostics::{ExprParseError, expected_name};
 
@@ -288,9 +287,9 @@ pub(crate) fn parse_kit_expr(text: &str) -> Result<Expr, ExprParseError> {
     Ok(expr)
 }
 
-// Primary expression parsers (include'd into this module scope).
-include!("primary.rs");
+// Primary expression parsers.
+mod primary;
 
-// Tests (include'd into this module scope, test builds only).
+// Tests (test builds only).
 #[cfg(test)]
-include!("tests.rs");
+mod tests;

@@ -331,10 +331,7 @@ impl TypeInferencer {
                 // NOTE: RangeLiteral is typed as Void (see infer_range_literal),
                 // so this accepts both integer-count and range-based for-loops.
                 // Accept CArray for iterating over arrays (e.g. `for x in arr`).
-                let iter_resolved = self
-                    .store
-                    .resolve(iter_ty)
-                    .map_err(CompilationError::TypeError)?;
+                let iter_resolved = self.store.resolve(iter_ty)?;
 
                 let var_ty = match &iter_resolved {
                     // For CArray, the loop variable gets the element type
@@ -770,18 +767,12 @@ impl TypeInferencer {
 
         let result_ty = match op {
             UnaryOperator::AddressOf => {
-                let resolved = self
-                    .store
-                    .resolve(expr_ty)
-                    .map_err(CompilationError::TypeError)?;
+                let resolved = self.store.resolve(expr_ty)?;
                 let ptr_ty = Type::Ptr(Box::new(resolved));
                 self.store.new_known(ptr_ty)
             }
             UnaryOperator::Dereference => {
-                let resolved = self
-                    .store
-                    .resolve(expr_ty)
-                    .map_err(CompilationError::TypeError)?;
+                let resolved = self.store.resolve(expr_ty)?;
                 if let Type::Ptr(inner_ty) = resolved {
                     self.store.new_known(*inner_ty)
                 } else {
@@ -910,10 +901,7 @@ impl TypeInferencer {
 
         // resolve struct type from annotation
         let struct_def = {
-            let resolved = self
-                .store
-                .resolve(resolved_ty)
-                .map_err(CompilationError::TypeError)?;
+            let resolved = self.store.resolve(resolved_ty)?;
             match resolved {
                 Type::Named(name) => self
                     .symbols
@@ -1005,10 +993,7 @@ impl TypeInferencer {
 
         let container_ty = self.infer_expr(inner)?;
 
-        let resolved = self
-            .store
-            .resolve(container_ty)
-            .map_err(CompilationError::TypeError)?;
+        let resolved = self.store.resolve(container_ty)?;
 
         let (struct_name, fields) = match resolved {
             Type::Struct { name, fields } => (name, fields),
@@ -1187,10 +1172,7 @@ impl TypeInferencer {
         let int_ty = self.store.new_known(Type::Int);
         self.unify(index_ty, int_ty)?;
 
-        let resolved = self
-            .store
-            .resolve(container_ty)
-            .map_err(CompilationError::TypeError)?;
+        let resolved = self.store.resolve(container_ty)?;
         let elem_ty = match resolved {
             Type::CArray(elem_type, _) => self.store.new_known(*elem_type),
             Type::Ptr(inner) => self.store.new_known(*inner),
@@ -1238,6 +1220,6 @@ impl TypeInferencer {
 
     /// Unify two type IDs
     fn unify(&mut self, a: TypeId, b: TypeId) -> CompileResult<()> {
-        self.store.unify(a, b).map_err(CompilationError::TypeError)
+        self.store.unify(a, b)
     }
 }

@@ -11,6 +11,9 @@ pub use codegen::Toolchain;
 #[grammar = "grammar/kit.pest"]
 pub struct KitParser;
 
+/// Shared escape/unescape logic for Kit string and character literals.
+pub(crate) mod escape;
+
 /// Tokenizer for expressions, used by the Pratt parser.
 ///
 /// Pest still handles the program/declaration/statement grammar; the Pratt
@@ -19,4 +22,4 @@ pub struct KitParser;
 pub(crate) mod lexer;
 
 /// Compilation error types.
-pub(crate) mod error;
+pub mod error;

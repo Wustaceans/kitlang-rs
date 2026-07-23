@@ -1,16 +1,23 @@
-// Primary expression parsers. Included into `mod.rs` via `include!`.
-// This file is in the same module scope as `mod.rs`, so imports are
-// inherited and all `ExprParser` private methods are accessible.
+// Primary expression parsers.
+//
+// These are implementations on `ExprParser` that are split into their own
+// module for readability. The main module (`mod.rs`) declares `mod primary;`.
+
+use crate::codegen::ast::{Expr, Literal};
+use crate::codegen::type_ast::FieldInit;
+use crate::codegen::types::{Type, TypeId};
+use crate::lexer::{Span, Tok};
+
+use super::super::binding_power::postfix;
+use super::super::diagnostics::ExprParseError;
+use super::ExprParser;
 
 impl<'a> ExprParser<'a> {
     /// Iteratively apply postfix operators (call, index, field access) to
     /// a base expression. Zero stack frames added per iteration. The
     /// chain is bounded by the source's syntactic length, but the parser
     /// is iterative, so the *call stack* depth is constant.
-    pub(crate) fn parse_postfix_chain(
-        &mut self,
-        mut base: Expr,
-    ) -> Result<Expr, ExprParseError> {
+    pub(crate) fn parse_postfix_chain(&mut self, mut base: Expr) -> Result<Expr, ExprParseError> {
         loop {
             let kind = self.peek().kind.clone();
             if postfix(&kind).is_none() {

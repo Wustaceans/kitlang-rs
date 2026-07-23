@@ -31,12 +31,21 @@ impl CodegenCtx<'_> {
                 condition,
                 bindings,
             } = self.decompose_pattern(&arm.pattern, matched_ty, &matched);
-            arms.push(ArmBindings { arm, condition, bindings });
+            arms.push(ArmBindings {
+                arm,
+                condition,
+                bindings,
+            });
         }
 
         let mut code = String::new();
         let mut first = true;
-        for ArmBindings { arm, condition, bindings } in &arms {
+        for ArmBindings {
+            arm,
+            condition,
+            bindings,
+        } in &arms
+        {
             let is_wildcard = matches!(
                 &arm.pattern,
                 Expr::Identifier { name, .. } if name == "default" || name == "_"

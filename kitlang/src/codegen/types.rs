@@ -1,5 +1,5 @@
 use crate::Rule;
-use crate::error::CompilationError;
+use crate::error::{CompilationError, CompileResult};
 
 use pest::iterators::Pair;
 use strum::{EnumString, IntoStaticStr};
@@ -82,30 +82,32 @@ impl TypeStore {
     }
 
     /// Bind a type variable to a specific type ID.
-    pub fn bind_type_var(&mut self, var_id: TypeVarId, ty: TypeId) -> Result<(), String> {
+    pub fn bind_type_var(&mut self, var_id: TypeVarId, ty: TypeId) -> CompileResult<()> {
         if let Some(existing) = self.type_vars.get_mut(var_id.0 as usize) {
             if let Some(binding) = existing.binding {
-                return Err(format!(
+                return Err(CompilationError::TypeError(format!(
                     "Type variable {var_id:?} already bound to {binding:?}"
-                ));
+                )));
             }
             existing.binding = Some(ty);
             Ok(())
         } else {
-            Err(format!("Type variable {var_id:?} does not exist"))
+            Err(CompilationError::TypeError(format!(
+                "Type variable {var_id:?} does not exist"
+            )))
         }
     }
 
     /// Resolve a `TypeId` to its concrete Type.
     ///
     /// Follows type variable bindings. Returns error if any type variables remain unbound.
-    pub fn resolve(&self, mut id: TypeId) -> Result<Type, String> {
+    pub fn resolve(&self, mut id: TypeId) -> CompileResult<Type> {
         loop {
             if id.0 as usize >= self.nodes.len() {
-                return Err(format!(
+                return Err(CompilationError::TypeError(format!(
                     "Type ID {id:?} does not exist (nodes.len() = {})",
                     self.nodes.len()
-                ));
+                )));
             }
             let node = &self.nodes[id.0 as usize];
 
@@ -116,15 +118,17 @@ impl TypeStore {
         }
     }
 
-    fn resolve_var(&self, id: TypeId, var_id: TypeVarId) -> Result<TypeId, String> {
+    fn resolve_var(&self, id: TypeId, var_id: TypeVarId) -> CompileResult<TypeId> {
         let Some(var) = self.type_vars.get(var_id.0 as usize) else {
-            return Err(format!(
+            return Err(CompilationError::TypeError(format!(
                 "Type variable {var_id:?} does not exist in TypeStore",
-            ));
+            )));
         };
 
         var.binding.ok_or_else(|| {
-            format!("Cannot resolve type ID {id:?}: type variable {var_id:?} is unbound")
+            CompilationError::TypeError(format!(
+                "Cannot resolve type ID {id:?}: type variable {var_id:?} is unbound"
+            ))
         })
     }
 
@@ -200,7 +204,7 @@ impl TypeStore {
     /// Unify two type IDs (the core inference algorithm).
     ///
     /// Makes two types agree by either binding unknowns or comparing known types structurally.
-    pub fn unify(&mut self, a: TypeId, b: TypeId) -> Result<(), String> {
+    pub fn unify(&mut self, a: TypeId, b: TypeId) -> CompileResult<()> {
         let rep_a = self.find_rep(a);
         let rep_b = self.find_rep(b);
 
@@ -219,7 +223,7 @@ impl TypeStore {
     }
 
     /// Unify two known Type enum values structurally.
-    fn unify_types(&mut self, a: &Type, b: &Type) -> Result<(), String> {
+    fn unify_types(&mut self, a: &Type, b: &Type) -> CompileResult<()> {
         // Fast path: structurally identical simple types (Int8, Bool, CString, etc.)
         if a == b
             && !matches!(
@@ -259,11 +263,11 @@ impl TypeStore {
             // Tuple types: unify element-wise
             (Type::Tuple(v1), Type::Tuple(v2)) => {
                 if v1.len() != v2.len() {
-                    return Err(format!(
+                    return Err(CompilationError::TypeError(format!(
                         "Cannot unify tuples of different sizes: {} vs {}",
                         v1.len(),
                         v2.len()
-                    ));
+                    )));
                 }
                 for (elem1, elem2) in v1.iter().zip(v2.iter()) {
                     self.unify_type_ids(elem1.clone(), elem2.clone())?;
@@ -274,9 +278,9 @@ impl TypeStore {
             // Array types: unify element type and length
             (Type::CArray(elem1, len1), Type::CArray(elem2, len2)) => {
                 if len1 != len2 {
-                    return Err(format!(
+                    return Err(CompilationError::TypeError(format!(
                         "Cannot unify arrays of different sizes: {len1:?} vs {len2:?}"
-                    ));
+                    )));
                 }
                 self.unify_type_ids((**elem1).clone(), (**elem2).clone())
             }
@@ -286,7 +290,9 @@ impl TypeStore {
                 if n1 == n2 {
                     Ok(())
                 } else {
-                    Err(format!("Cannot unify different named types: {n1} vs {n2}"))
+                    Err(CompilationError::TypeError(format!(
+                        "Cannot unify different named types: {n1} vs {n2}"
+                    )))
                 }
             }
 
@@ -302,11 +308,11 @@ impl TypeStore {
                 },
             ) => {
                 if p1.len() != p2.len() {
-                    return Err(format!(
+                    return Err(CompilationError::TypeError(format!(
                         "Cannot unify functions with different parameter counts: {} vs {}",
                         p1.len(),
                         p2.len()
-                    ));
+                    )));
                 }
                 for (t1, t2) in p1.iter().zip(p2.iter()) {
                     self.unify_type_ids(t1.clone(), t2.clone())?;
@@ -318,7 +324,10 @@ impl TypeStore {
             _ if Self::is_numeric(&a_ty) && Self::is_numeric(&b_ty) => Ok(()),
 
             // Everything else is a type mismatch
-            _ => Err(format!("Type mismatch: {:?} vs {:?}", a_ty, b_ty)),
+            _ => Err(CompilationError::TypeError(format!(
+                "Type mismatch: {:?} vs {:?}",
+                a_ty, b_ty
+            ))),
         }
     }
 
@@ -345,7 +354,7 @@ impl TypeStore {
     // HACK: creates orphan TypeIds that bloat the store.
     // Inner types stored by-value in Type enum (Ptr, Tuple, CArray) cannot
     // participate in unification - this check is one-shot only.
-    fn unify_type_ids(&mut self, a: Type, b: Type) -> Result<(), String> {
+    fn unify_type_ids(&mut self, a: Type, b: Type) -> CompileResult<()> {
         let a_id = self.new_known(a);
         let b_id = self.new_known(b);
         self.unify(a_id, b_id)

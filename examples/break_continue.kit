@@ -1,0 +1,26 @@
+include "stdio.h";
+
+function main() {
+    var sum: Int = 0;
+    for i in 0...10 {
+        if (i == 5) { break; }
+        sum = sum + i;
+    }
+    printf("break sum: %d\n", sum);
+
+    var even_sum: Int = 0;
+    for i in 0...10 {
+        if (i % 2 != 0) { continue; }
+        even_sum = even_sum + i;
+    }
+    printf("continue sum: %d\n", even_sum);
+
+    var count: Int = 0;
+    var while_sum: Int = 0;
+    while count < 10 {
+        count = count + 1;
+        if (count % 2 == 0) { continue; }
+        while_sum = while_sum + count;
+    }
+    printf("while odd sum: %d\n", while_sum);
+}

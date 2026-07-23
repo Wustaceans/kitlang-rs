@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use which::which;
 
+use crate::error::{CompilationError, CompileResult};
+
 const CANDIDATES: &[&str] = &[
     #[cfg(windows)]
     "cl",
@@ -43,9 +45,8 @@ impl FromStr for Toolchain {
 
 /// Convert a path's file stem to a lowercase `String`.
 ///
-/// This attempts to get the file stem (the filename without extension)
-/// from the provided `Path`, convert it to UTF-8, and return a lowercase
-/// `String`.
+/// This attempts to get the file stem (the filename without extension) from the provided `Path`,
+/// convert it to UTF-8, and return a lowercase `String`.
 ///
 /// If the path has no file stem or the file stem is not valid UTF-8, this function returns `None`.
 pub fn get_lowercase_exe(path: &Path) -> Option<String> {
@@ -54,8 +55,8 @@ pub fn get_lowercase_exe(path: &Path) -> Option<String> {
 
 /// Detect the toolchain for a given executable path.
 ///
-/// If a custom search function `search_fn` is supplied, its result (if any)
-/// overrides the simple filename-based detection.
+/// If a custom search function `search_fn` is supplied, its result (if any) overrides the simple
+/// filename-based detection.
 fn detect_toolchain<SearchFn>(path: &Path, search_fn: Option<SearchFn>) -> Toolchain
 where
     SearchFn: for<'a> FnOnce(&'a Path) -> Option<String>,
@@ -71,54 +72,55 @@ where
 }
 
 impl Toolchain {
-    /// Return (toolchain, full path to the discovered compiler executable) if one was found.
+    /// Return (toolchain, path to the compiler executable) if one was found.
     ///
     /// Detection checks (in order)
     /// 1. `CC` env var (if set and resolves)
     /// 2. Known candidates on PATH (`cl`, `cc`, `clang`, `gcc`).
     ///
     /// The returned `Toolchain` enum describes the *detected* compiler type (gcc/clang/msvc).
-    /// Detect the toolchain for a specific compiler executable path without
-    /// searching `PATH`. Used when the user supplies an explicit `--cc` override.
+    /// Detect the toolchain for a specific compiler executable path without searching `PATH`. Used
+    /// when the user supplies an explicit `--cc` override.
     ///
-    /// Detection is filename-based (e.g. a path ending in `cl.exe` is MSVC,
-    /// `clang` is Clang, everything else is treated as GCC-compatible). Falls
-    /// back to `Gcc` for unrecognized names rather than `Other`, so that the
-    /// caller can still attempt compilation with the override.
+    /// Detection is filename-based (e.g. a path ending in `cl.exe` is MSVC, `clang` is Clang,
+    /// everything else is treated as GCC-compatible). Falls back to `Gcc` for unrecognized names
+    /// rather than `Other`, so that the caller can still attempt compilation with the override.
     pub fn from_path_lossy(path: &Path) -> Toolchain {
         detect_toolchain::<NoSearch>(path, None)
     }
 
     pub fn executable_path() -> Option<(Toolchain, PathBuf)> {
-        // Check the CC environment variable
+        // Respect an explicit compiler override first.
+        //
+        // If CC points to a compiler name (or executable), resolve it on `PATH` and use it instead
+        // of probing the system.
         if let Ok(env_cc) = env::var("CC")
             && let Ok(path) = which(&env_cc)
         {
-            // Search PATH for known compilers
-            let search_fn = |_: &Path| {
-                let compilers = ["clang", "gcc"];
-
-                // Look through each possible compiler and check if it exists
-                let found = compilers.iter().map(which::which).find_map(Result::ok);
-
-                // Get the executable name from the path
-                found.as_deref().and_then(get_lowercase_exe)
-            };
-
-            return Some((detect_toolchain(&path, Some(search_fn)), path));
+            return Some((detect_toolchain::<NoSearch>(&path, None), path));
         }
 
+        // Otherwise, search through the preferred compiler candidates in order.
+        //
+        // The first compiler we can successfully resolve is considered the system's default C
+        // compiler.
         for name in CANDIDATES {
             if let Ok(path) = which(name) {
                 let toolchain = if cfg!(unix) && *name == "cc" {
+                    // On Unix-like systems, `cc` is often a generic frontend or symlink rather
+                    // than the actual compiler. Resolve it to its underlying implementation (like
+                    // GCC or clang) so we report the real toolchain instead of the generic wrapper.
                     resolve_cc_toolchain(&path)
                 } else {
+                    // Other compiler names already identify a specific toolchain.
                     detect_toolchain::<NoSearch>(&path, None)
                 };
+
                 return Some((toolchain, path));
             }
         }
 
+        // We didn't find any compiler on PATH
         None
     }
 
@@ -150,9 +152,8 @@ impl Toolchain {
 
     /// Flags that should be passed to the compiler for C compilation.
     ///
-    /// These are intentionally conservative and represent a set of safe, portable
-    /// defaults per toolchain. `CompilerOptions` will combine these with link
-    /// and target options.
+    /// These are intentionally conservative and represent a set of safe, portable defaults per
+    /// toolchain. `CompilerOptions` will combine these with link and target options.
     pub fn get_compiler_flags(&self) -> Vec<String> {
         match self {
             Toolchain::Gcc | Toolchain::Clang => {
@@ -169,10 +170,9 @@ impl Toolchain {
         }
     }
 
-    /// The language-standard flag that guarantees a C99-compatible build for this
-    /// toolchain. User-supplied flags that would change the standard dialect are
-    /// stripped and this is re-applied (see [`translate_user_flags`]) so the
-    /// generated output always compiles as C99.
+    /// The language-standard flag that guarantees a C99-compatible build for this toolchain.
+    /// User-supplied flags that would change the standard dialect are stripped and this is
+    /// re-applied (see [`translate_user_flags`] so the generated output always compiles as C99.
     pub fn c99_standard_flag(&self) -> Option<&'static str> {
         match self {
             Toolchain::Gcc | Toolchain::Clang => Some("-std=c99"),
@@ -443,20 +443,21 @@ impl CompilerOptions {
     /// - if `sources` is empty
     /// - if `output` is not set
     /// - if no system compiler can be found and no `compiler_path` was set
-    pub fn build_invocation(&self) -> Result<(PathBuf, Vec<String>), String> {
+    pub fn build_invocation(&self) -> CompileResult<(PathBuf, Vec<String>)> {
         if self.sources.is_empty() {
-            return Err("no source files specified in CompilerOptions".into());
+            return Err(CompilationError::CompileError(
+                "no source files specified in CompilerOptions".into(),
+            ));
         }
-        let out = self
-            .output
-            .as_ref()
-            .ok_or_else(|| "output (target) path not set in CompilerOptions".to_string())?;
+        let out = self.output.as_ref().ok_or_else(|| {
+            CompilationError::CompileError("output (target) path not set in CompilerOptions".into())
+        })?;
 
         let compiler_path = self
             .compiler_path
             .clone()
             .or_else(|| Toolchain::executable_path().map(|(_, p)| p))
-            .ok_or_else(|| "no system compiler found".to_string())?;
+            .ok_or_else(|| CompilationError::CompileError("no system compiler found".into()))?;
 
         let mut args = Vec::new();
 
@@ -471,13 +472,13 @@ impl CompilerOptions {
         args.push(self.toolchain.output_flag().to_string());
         args.push(out.display().to_string());
 
-        // Base C99 standard + warning flags, then any user-supplied flags
-        // (translated to this toolchain and guaranteed C99-compatible).
+        // Base C99 standard + warning flags, then any user-supplied flags (translated to this
+        // toolchain and guarantees ANSI C99-compatible).
         args.extend(self.toolchain.get_compiler_flags());
         args.extend(self.toolchain.translate_user_flags(&self.user_cflags));
 
-        // Library search paths: the hardcoded system default first, then any
-        // user-supplied paths (translated per toolchain).
+        // Library search paths: the hardcoded system default first, then any user-supplied paths
+        // (translated per toolchain).
         match self.toolchain {
             Toolchain::Gcc | Toolchain::Clang => {
                 args.push("-L/usr/local/lib".to_string());

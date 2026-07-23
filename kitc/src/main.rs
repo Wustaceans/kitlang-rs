@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use kitlang::codegen::frontend::Compiler;
+use kitlang::error::CompilationError;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time;
@@ -47,7 +48,7 @@ enum Commands {
         #[arg(long)]
         run: bool,
 
-        /// The output file name
+        /// Print compilation timing information
         #[arg(long)]
         measure: bool,
     },
@@ -78,7 +79,7 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-            let exe_path = compile(
+            let exe_path = match compile(
                 &source,
                 &source_paths,
                 &libs,
@@ -86,7 +87,13 @@ fn main() -> Result<(), Error> {
                 &lib_paths,
                 cc.as_deref(),
                 measure,
-            )?;
+            ) {
+                Ok(path) => path,
+                Err(e) => {
+                    eprintln!("{}", e.render());
+                    std::process::exit(1);
+                }
+            };
             if run {
                 run_executable(&exe_path)?;
             } else {
@@ -105,7 +112,7 @@ fn compile(
     lib_paths: &[String],
     cc: Option<&str>,
     measure: bool,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, CompilationError> {
     let init = time::Instant::now();
 
     let ext = if cfg!(windows) { "exe" } else { "" };
@@ -121,7 +128,7 @@ fn compile(
         cc.map(PathBuf::from),
     );
 
-    compiler.compile().map_err(|e| e.render())?;
+    compiler.compile()?;
 
     if measure {
         println!("→ Compiled in {}ms", init.elapsed().as_millis());

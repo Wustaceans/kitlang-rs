@@ -1,5 +1,5 @@
 use super::ast::{
-    Attributed, Function, GlobalDecl, Literal, MetaArg, Metadata, has_meta, has_no_mangle,
+    Attributed, Function, GlobalDecl, Literal, MetaArg, Metadata, has_meta, is_unmangled,
 };
 use super::ast::{Block, Program};
 use super::frontend::Compiler;
@@ -26,7 +26,7 @@ fn meta(name: &str) -> Vec<Metadata> {
 }
 
 fn assert_no_mangle<T: Attributed>(item: &T, expect_no_mangle: bool, expect_extern: bool) {
-    assert_eq!(item.has_no_mangle(), expect_no_mangle);
+    assert_eq!(item.is_unmangled(), expect_no_mangle);
     assert_eq!(item.is_extern(), expect_extern);
 }
 
@@ -168,10 +168,10 @@ fn test_metadata_has_meta() {
 }
 
 #[test]
-fn test_metadata_has_no_mangle() {
-    assert!(has_no_mangle(&meta("extern")));
-    assert!(has_no_mangle(&meta("expose")));
-    assert!(!has_no_mangle(&meta("inline")));
+fn test_metadata_is_unmangled() {
+    assert!(is_unmangled(&meta("extern")));
+    assert!(is_unmangled(&meta("expose")));
+    assert!(!is_unmangled(&meta("inline")));
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn test_metadata_meta_arg_literal() {
 // --- Attributed property tests ---
 
 #[test]
-fn test_function_has_no_mangle_extern() {
+fn test_function_is_unmangled_extern() {
     let f = Function {
         name: "foo".to_string(),
         params: vec![],
@@ -218,7 +218,7 @@ fn test_function_has_no_mangle_extern() {
 }
 
 #[test]
-fn test_function_has_no_mangle_expose() {
+fn test_function_is_unmangled_expose() {
     let f = Function {
         name: "foo".to_string(),
         params: vec![],
@@ -246,7 +246,7 @@ fn test_function_no_metadata() {
 }
 
 #[test]
-fn test_global_decl_has_no_mangle() {
+fn test_global_decl_is_unmangled() {
     let g = GlobalDecl {
         name: "GLOBAL".to_string(),
         annotation: None,
@@ -260,7 +260,7 @@ fn test_global_decl_has_no_mangle() {
 }
 
 #[test]
-fn test_struct_has_no_mangle_extern() {
+fn test_struct_is_unmangled_extern() {
     let s = StructDefinition {
         name: "Foo".to_string(),
         fields: vec![],
@@ -271,7 +271,7 @@ fn test_struct_has_no_mangle_extern() {
 }
 
 #[test]
-fn test_struct_has_no_mangle_expose() {
+fn test_struct_is_unmangled_expose() {
     let s = StructDefinition {
         name: "Foo".to_string(),
         fields: vec![],
@@ -293,7 +293,7 @@ fn test_struct_no_metadata() {
 }
 
 #[test]
-fn test_enum_has_no_mangle_extern() {
+fn test_enum_is_unmangled_extern() {
     let e = EnumDefinition {
         name: "Foo".to_string(),
         variants: vec![],
@@ -304,7 +304,7 @@ fn test_enum_has_no_mangle_extern() {
 }
 
 #[test]
-fn test_enum_variant_has_no_mangle_extern() {
+fn test_enum_variant_is_unmangled_extern() {
     let v = EnumVariant {
         name: "Bar".to_string(),
         parent: "Foo".to_string(),
@@ -316,7 +316,7 @@ fn test_enum_variant_has_no_mangle_extern() {
 }
 
 #[test]
-fn test_enum_variant_has_no_mangle_expose() {
+fn test_enum_variant_is_unmangled_expose() {
     let v = EnumVariant {
         name: "Bar".to_string(),
         parent: "Foo".to_string(),
@@ -483,7 +483,7 @@ fn test_parse_extern_enum_variant() {
     let v = &e.variants[0];
     assert_eq!(v.name, "Bar");
     assert!(
-        v.has_no_mangle(),
+        v.is_unmangled(),
         "variant Bar should have no_mangle from #[extern]"
     );
     assert!(v.is_extern(), "variant Bar should be extern");

@@ -1,0 +1,5 @@
+initial: 10
+after += 5: 15
+after -= 3: 12
+after *= 2: 24
+after /= 4: 6

@@ -169,12 +169,12 @@ number = { float | integer }
 integer = @{ ASCII_DIGIT+ }
 float = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ )? }
 boolean = { "true" | "false" }
-char_literal = @{ "'" ~ ( "\\'" | !"'" ~ ANY ) ~ "'" }
+char_literal = @{ "'" ~ ( "\\" ~ ANY | !"'" ~ ANY ) ~ "'" }
 
 string = @{ "\"" ~ ( "\\" ~ ANY | !"\"" ~ ANY )* ~ "\"" }
 
 identifier = @{
-    !("true" | "false" | "null" | "this" | "Self")
+    !("true" | "false" | "null" | "this" | "Self" | "break" | "continue")
     ~ (ASCII_ALPHA | "_")
     ~ (ASCII_ALPHANUMERIC | "_")*
 }

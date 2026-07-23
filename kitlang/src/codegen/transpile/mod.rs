@@ -27,12 +27,12 @@ pub(crate) struct CodegenCtx<'a> {
 }
 
 /// Check if a declaration in the given module field is marked #[extern] or #[expose].
-macro_rules! has_no_mangle_in_module {
+macro_rules! is_unmangled_in_module {
     ($registry:expr, $mod_path:expr, $name:expr, $field:ident) => {
         $registry
             .get($mod_path)
             .and_then(|m| m.program.$field.iter().find(|item| item.name == $name))
-            .is_some_and(|item| item.has_no_mangle())
+            .is_some_and(|item| item.is_unmangled())
     };
 }
 
@@ -546,7 +546,7 @@ impl CodegenCtx<'_> {
         let mangled = if name == "main" {
             name.to_string()
         } else if let Some(mp) = &mod_path {
-            if has_no_mangle_in_module!(self.registry, mp, base_name.as_str(), functions) {
+            if is_unmangled_in_module!(self.registry, mp, base_name.as_str(), functions) {
                 base_name
             } else {
                 mangle_name(mp, &base_name)
@@ -626,7 +626,7 @@ impl CodegenCtx<'_> {
             Expr::Identifier { name, .. } => {
                 if let Some(mod_path) = self.find_global_module(name) {
                     // Global variable reference.
-                    if has_no_mangle_in_module!(self.registry, &mod_path, name.as_str(), globals) {
+                    if is_unmangled_in_module!(self.registry, &mod_path, name.as_str(), globals) {
                         name.clone()
                     } else {
                         mangle_name(&mod_path, name)
@@ -636,7 +636,7 @@ impl CodegenCtx<'_> {
                 {
                     // Function reference used as a value (e.g. `g(f)`).
                     // Reuse the call-path mangling for cross-module correctness + no_mangle.
-                    if has_no_mangle_in_module!(self.registry, &mp, bn.as_str(), functions) {
+                    if is_unmangled_in_module!(self.registry, &mp, bn.as_str(), functions) {
                         bn
                     } else {
                         mangle_name(&mp, &bn)

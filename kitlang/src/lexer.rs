@@ -216,47 +216,11 @@ fn parse_ident(lex: &mut Lexer<Tok>) -> Option<String> {
 }
 
 fn unescape_char(s: &str) -> Option<char> {
-    let mut chars = s.chars();
-    let c = chars.next()?;
-    if c == '\\' {
-        let esc = chars.next()?;
-        Some(match esc {
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            '\\' => '\\',
-            '\'' => '\'',
-            '"' => '"',
-            '0' => '\0',
-            other => other,
-        })
-    } else {
-        Some(c)
-    }
+    crate::escape::unescape_single(s)
 }
 
 fn unescape_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(esc) = chars.next() {
-                match esc {
-                    'n' => out.push('\n'),
-                    'r' => out.push('\r'),
-                    't' => out.push('\t'),
-                    '\\' => out.push('\\'),
-                    '\'' => out.push('\''),
-                    '"' => out.push('"'),
-                    '0' => out.push('\0'),
-                    other => out.push(other),
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
+    crate::escape::unescape_string(s)
 }
 
 /// A lexical error encountered during tokenization.

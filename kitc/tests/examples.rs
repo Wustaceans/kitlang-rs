@@ -394,3 +394,23 @@ fn test_indirect_call() -> Result<(), Box<dyn std::error::Error>> {
 fn test_enum_match() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("enum_match", None)
 }
+
+#[test]
+fn test_break_continue() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("break_continue", None)
+}
+
+#[test]
+fn test_arithmetic() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("arithmetic", None)
+}
+
+#[test]
+fn test_compound_assign() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("compound_assign", None)
+}
+
+#[test]
+fn test_escape_sequences() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("escape_sequences", None)
+}

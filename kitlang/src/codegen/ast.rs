@@ -30,9 +30,9 @@ pub fn has_meta(metas: &[Metadata], name: &str) -> bool {
     metas.iter().any(|m| m.has_name(name))
 }
 
-/// Returns `true` if the metadata list contains `#[extern]` or `#[expose]` - both of which support
-/// name mangling.
-pub fn has_no_mangle(metas: &[Metadata]) -> bool {
+/// Returns `true` if the metadata list contains `#[extern]` or `#[expose]` - both of which
+/// prevent name mangling.
+pub fn is_unmangled(metas: &[Metadata]) -> bool {
     has_meta(metas, "extern") || has_meta(metas, "expose")
 }
 
@@ -48,8 +48,8 @@ pub trait Attributed {
     fn metadata(&self) -> &[Metadata];
 
     /// Returns `true` if this declaration has `#[extern]` or `#[expose]` metadata.
-    fn has_no_mangle(&self) -> bool {
-        has_no_mangle(self.metadata())
+    fn is_unmangled(&self) -> bool {
+        is_unmangled(self.metadata())
     }
 
     /// Returns `true` if this declaration has `#[extern]` metadata.
@@ -57,11 +57,11 @@ pub trait Attributed {
         has_meta(self.metadata(), "extern")
     }
 
-    /// Returns `ModulePath::new()` (empty = no mangling) when `has_no_mangle()` is true,
+    /// Returns `ModulePath::new()` (empty = no mangling) when `is_unmangled()` is true,
     /// otherwise returns `current_module`. Use this as the module path argument to
     /// `mangle_name` / `mangle_enum_variant` to control name mangling.
     fn mangling_module(&self, current_module: &ModulePath) -> ModulePath {
-        if self.has_no_mangle() {
+        if self.is_unmangled() {
             ModulePath::new()
         } else {
             current_module.clone()
@@ -365,15 +365,9 @@ impl Attributed for GlobalDecl {
 impl Literal {
     /// Escape a character for use in a C char or string literal.
     fn escape_char(c: char) -> String {
-        match c {
-            '\n' => "\\n".to_string(),
-            '\r' => "\\r".to_string(),
-            '\t' => "\\t".to_string(),
-            '\\' => "\\\\".to_string(),
-            '\'' => "\\'".to_string(),
-            '"' => "\\\"".to_string(),
-            c => c.to_string(),
-        }
+        crate::escape::escape_for_c(c)
+            .unwrap_or(&c.to_string())
+            .to_string()
     }
 
     #[must_use]
@@ -402,15 +396,12 @@ impl Literal {
             }
             Literal::Char(c) => format!("'{}'", Self::escape_char(*c)),
             Literal::String(s) => {
-                // Escape special characters for C string literals
                 let escaped: String = s
                     .chars()
-                    .map(|c| match c {
-                        '\\' => "\\\\".to_string(),
-                        '\"' => "\\\"".to_string(),
-                        '\n' => "\\n".to_string(),
-                        '\t' => "\\t".to_string(),
-                        _ => c.to_string(),
+                    .map(|c| {
+                        crate::escape::escape_for_c(c)
+                            .unwrap_or(&c.to_string())
+                            .to_string()
                     })
                     .collect();
                 format!("\"{escaped}\"")

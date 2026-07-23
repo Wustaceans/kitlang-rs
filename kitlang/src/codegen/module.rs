@@ -549,7 +549,7 @@ impl ModuleRegistry {
         macro_rules! reg_extern {
             ($items:expr) => {
                 for item in $items {
-                    if item.has_no_mangle() {
+                    if item.is_unmangled() {
                         self.register_extern_name(&item.name)?;
                     }
                 }

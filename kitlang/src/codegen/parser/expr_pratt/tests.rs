@@ -1,6 +1,11 @@
-// Unit tests for the Pratt parser. Included into `mod.rs` via `include!`,
-// so this file is in the same module scope. Only compiled in test builds.
+// Unit tests for the Pratt parser.
+//
+// Declared as `#[cfg(test)] mod tests;` in the parent module, so this
+// file is a proper child module.
 
+use super::callee_name;
+use super::parse_kit_expr;
+use crate::codegen::ast::{Expr, Literal};
 use crate::codegen::types::{AssignmentOperator, BinaryOperator, UnaryOperator};
 
 /// Parse an expression and unwrap

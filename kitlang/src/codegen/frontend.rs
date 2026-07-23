@@ -690,9 +690,7 @@ impl Compiler {
             .includes(slice::from_ref(&self.build_dir))
             .build();
 
-        let (compiler_path, args) = opts
-            .build_invocation()
-            .map_err(CompilationError::CompileError)?;
+        let (compiler_path, args) = opts.build_invocation()?;
 
         let output = Command::new(compiler_path)
             .args(&args)
