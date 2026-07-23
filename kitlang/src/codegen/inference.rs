@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::Field;
-use super::ast::{Block, Expr, Function, GlobalDecl, Literal, Program, Stmt};
+use super::ast::{Block, Expr, Function, GlobalDecl, Literal, MatchStmt, Program, Stmt};
 use super::symbols::{EnumVariantInfo, SymbolTable};
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
 use super::types::{BinaryOperator, Type, TypeId, TypeStore, UnaryOperator};
@@ -352,11 +352,144 @@ impl TypeInferencer {
                 self.infer_block(body)?;
             }
 
+            Stmt::Match(m) => {
+                self.infer_match_stmt(m)?;
+            }
+
             Stmt::Break | Stmt::Continue => {
                 // No type inference needed
             }
         }
         Ok(())
+    }
+
+    /// Infer types for a match statement.
+    fn infer_match_stmt(&mut self, m: &mut MatchStmt) -> CompileResult<()> {
+        let matched_ty = self.infer_expr(&mut m.expr)?;
+        for arm in &mut m.arms {
+            let is_default = matches!(
+                &arm.pattern,
+                Expr::Identifier { name, .. } if name == "default" || name == "_"
+            );
+            self.symbols.push_scope();
+            if !is_default {
+                let pattern_ty = self.infer_pattern(&mut arm.pattern)?;
+                self.unify(matched_ty, pattern_ty)?;
+            }
+            self.extract_pattern_bindings(&arm.pattern, matched_ty)?;
+            self.infer_block(&mut arm.body)?;
+            self.symbols.pop_scope();
+        }
+        Ok(())
+    }
+
+    /// Infer types for a pattern expression. Unlike `infer_expr`, this handles
+    /// enum constructor patterns like `SomeInt(x)` by looking up the variant
+    /// and treating identifier arguments as bindings rather than references.
+    fn infer_pattern(&mut self, pattern: &mut Expr) -> CompileResult<TypeId> {
+        match pattern {
+            Expr::Identifier { name, ty, .. } if name == "_" || name == "default" => {
+                let fresh = self.store.new_unknown();
+                *ty = fresh;
+                Ok(fresh)
+            }
+            Expr::Identifier { ty, .. } => {
+                // Binding pattern: create an unknown type for the AST node
+                let fresh = self.store.new_unknown();
+                *ty = fresh;
+                Ok(fresh)
+            }
+            Expr::Call { callee, args, ty } => {
+                // Enum constructor pattern: `SomeVal(v)` or `SomeVal(1)`
+                if let Expr::Identifier {
+                    name: variant_name, ..
+                } = callee.as_ref()
+                {
+                    // Look up the variant info
+                    let variant_info = self
+                        .symbols
+                        .lookup_enum_variant_by_simple_name(variant_name)
+                        .cloned();
+                    if let Some(info) = variant_info {
+                        let enum_ty = self.store.new_known(Type::Named(info.enum_name.clone()));
+                        *ty = enum_ty;
+
+                        // Use the arg types already resolved by register_enum_types
+                        let arg_types = info.arg_types.clone();
+
+                        // Infer each argument pattern
+                        for (arg, &expected_ty) in args.iter_mut().zip(arg_types.iter()) {
+                            let arg_ty = self.infer_pattern(arg)?;
+                            self.unify(expected_ty, arg_ty)?;
+                        }
+
+                        return Ok(enum_ty);
+                    }
+                }
+                // Fallback: regular expression inference
+                self.infer_expr(pattern)
+            }
+            other => self.infer_expr(other),
+        }
+    }
+
+    /// Walk a pattern expression tree and bind any identifiers as const variables.
+    /// For enum variants like `SomeInt(x)`, the identifier `x` is bound to the
+    /// variant's field type.
+    fn extract_pattern_bindings(
+        &mut self,
+        pattern: &Expr,
+        matched_ty: TypeId,
+    ) -> CompileResult<()> {
+        match pattern {
+            Expr::Identifier { name, .. } if name == "_" || name == "default" => Ok(()),
+            Expr::Identifier { name, .. } => {
+                self.symbols.define_var(name, matched_ty);
+                Ok(())
+            }
+            Expr::Call { callee, args, .. } => {
+                // For enum constructor patterns like `SomeInt(x)`, look up the
+                // variant info to determine each argument's type
+                if let Expr::Identifier {
+                    name: variant_name, ..
+                } = callee.as_ref()
+                {
+                    // Clone the arg types to release the borrow on self.symbols
+                    let arg_types: Option<Vec<TypeId>> = self
+                        .symbols
+                        .lookup_enum_variant_by_simple_name(variant_name)
+                        .map(|info| info.arg_types.to_vec());
+                    if let Some(expected_types) = arg_types {
+                        if args.len() == expected_types.len() {
+                            for (arg, &expected_ty) in args.iter().zip(expected_types.iter()) {
+                                self.extract_pattern_bindings(arg, expected_ty)?;
+                            }
+                            return Ok(());
+                        }
+                        debug_assert!(
+                            false,
+                            "pattern '{}' has {} args but variant expects {}",
+                            variant_name,
+                            args.len(),
+                            expected_types.len(),
+                        );
+                    }
+                }
+                for arg in args {
+                    self.extract_pattern_bindings(arg, matched_ty)?;
+                }
+                Ok(())
+            }
+            Expr::Literal { .. } => Ok(()),
+            Expr::StructInit { fields, .. } => {
+                for field in fields {
+                    self.extract_pattern_bindings(&field.value, matched_ty)?;
+                }
+                Ok(())
+            }
+            Expr::FieldAccess { expr, .. } => self.extract_pattern_bindings(expr, matched_ty),
+            _ => Ok(()),
+        }
     }
 
     /// Infer types for an expression

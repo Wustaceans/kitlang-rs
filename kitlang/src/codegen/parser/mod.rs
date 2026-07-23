@@ -8,7 +8,8 @@ use crate::error::{self, CompilationError, Span};
 use crate::{Rule, parse_error};
 
 use super::ast::{
-    Block, Expr, Function, GlobalDecl, Include, Literal, MetaArg, Metadata, Param, Stmt,
+    Block, Expr, Function, GlobalDecl, Include, Literal, MatchArm, MatchStmt, MetaArg, Metadata,
+    Param, Stmt,
 };
 use super::module::{ImportType, ModuleImport, ModulePath};
 use super::type_ast::{
@@ -660,6 +661,7 @@ impl Parser {
                     Rule::for_stmt => self.parse_for_stmt(inner),
                     Rule::break_stmt => Ok(Stmt::Break),
                     Rule::continue_stmt => Ok(Stmt::Continue),
+                    Rule::match_stmt => self.parse_match_stmt(inner),
                     other => Err(CompilationError::ParseError(format!(
                         "unexpected statement: {other:?}",
                     ))),
@@ -875,5 +877,67 @@ impl Parser {
                 .with_context(self.context_from_span(&parent_span))
         })?)?;
         Ok(Stmt::For { var, iter, body })
+    }
+
+    fn parse_match_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+        let parent_span = pair.as_span();
+        // match_stmt = { "match" ~ expr ~ "{" ~ (match_case)* ~ (default_case)? ~ "}" }
+        let mut inner = pair.into_inner();
+        let expr = self.parse_expr(inner.next().ok_or_else(|| {
+            parse_error!("match statement missing expression")
+                .with_context(self.context_from_span(&parent_span))
+        })?)?;
+        let mut arms = Vec::new();
+        let mut default_arm = None;
+        for child in inner {
+            match child.as_rule() {
+                Rule::match_case => {
+                    let case_span = child.as_span();
+                    let mut case_inner = child.into_inner();
+                    let pattern = self.parse_expr(case_inner.next().ok_or_else(|| {
+                        parse_error!("match case missing pattern")
+                            .with_context(self.context_from_span(&case_span))
+                    })?)?;
+                    let body_expr = self.parse_expr(case_inner.next().ok_or_else(|| {
+                        parse_error!("match case missing body")
+                            .with_context(self.context_from_span(&case_span))
+                    })?)?;
+                    let body = Block {
+                        stmts: vec![Stmt::Expr(body_expr)],
+                    };
+                    arms.push(MatchArm { pattern, body });
+                }
+                Rule::default_case => {
+                    let def_span = child.as_span();
+                    let mut def_inner = child.into_inner();
+                    let body_expr = self.parse_expr(def_inner.next().ok_or_else(|| {
+                        parse_error!("default case missing body")
+                            .with_context(self.context_from_span(&def_span))
+                    })?)?;
+                    let body = Block {
+                        stmts: vec![Stmt::Expr(body_expr)],
+                    };
+                    default_arm = Some(body);
+                }
+                _ => {}
+            }
+        }
+        if let Some(def) = default_arm {
+            arms.push(MatchArm {
+                // `ty: TypeId::default()` is a sentinel — the codegen always
+                // checks `name == "default"` before touching `ty`, so this is
+                // never read.  If you add a new code path that inspects the
+                // pattern's `ty`, guard it against the sentinel first.
+                pattern: Expr::Identifier {
+                    name: "default".to_string(),
+                    ty: TypeId::default(),
+                },
+                body: def,
+            });
+        }
+        Ok(Stmt::Match(MatchStmt {
+            expr: Box::new(expr),
+            arms,
+        }))
     }
 }

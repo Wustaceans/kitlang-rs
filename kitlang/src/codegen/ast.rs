@@ -186,6 +186,26 @@ pub enum Stmt {
     Break,
     /// Continue statement.
     Continue,
+    /// Match statement (pattern matching).
+    Match(MatchStmt),
+}
+
+/// Represents a single arm of a match statement: `pattern => body`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchArm {
+    /// The pattern expression to match against.
+    pub pattern: Expr,
+    /// The block to execute if the pattern matches.
+    pub body: Block,
+}
+
+/// Represents a match statement: `match expr { arm1; arm2; ... }`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchStmt {
+    /// The expression to match against.
+    pub expr: Box<Expr>,
+    /// The list of match arms (pattern → body).
+    pub arms: Vec<MatchArm>,
 }
 
 /// Represents an expression in Kit.

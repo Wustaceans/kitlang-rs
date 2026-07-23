@@ -64,6 +64,9 @@ while_stmt = { "while" ~ expr ~ block }
 do_while_stmt = { "do" ~ block ~ "while" ~ expr ~ ";" }
 
 match_stmt = { "match" ~ expr ~ "{" ~ (match_case)* ~ (default_case)? ~ "}" }
+// HAZARD: `"=>"` below could be consumed as `=` (ASSIGN_OP) + `>` (comp_op)
+// by the `expr` rule.  Pest's string-literal priority currently prevents this,
+// but a rule restructuring (e.g. making `expr` atomic) would silently break it.
 match_case = { expr ~ "=>" ~ expr }
 default_case = { "default" ~ "=>" ~ expr }
 

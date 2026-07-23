@@ -1,0 +1,69 @@
+include "stdio.h";
+
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+enum Maybe {
+    SomeVal(x: Int);
+    None;
+}
+
+function match_color(c: Color) {
+    match c {
+        Red => printf("Red\n")
+        Green => printf("Green\n")
+        Blue => printf("Blue\n")
+        default => printf("Unknown\n")
+    }
+}
+
+function match_int(v: Int) {
+    match v {
+        1 => printf("one\n")
+        2 => printf("two\n")
+        default => printf("other\n")
+    }
+}
+
+function main() {
+    // Basic match on simple enum
+    match_color(Red);
+    match_color(Green);
+    match_color(Blue);
+    match_int(1);
+    match_int(2);
+    match_int(10);
+
+    // Complex enum: field binding
+    var m = SomeVal(42);
+    match m {
+        SomeVal(x) => printf("Got: %d\n", x)
+        None => printf("Nothing\n")
+    }
+
+    // Complex enum: match None variant (discriminant, no-arg)
+    var n = None;
+    match n {
+        None => printf("none\n")
+        _ => printf("unreachable\n")
+    }
+
+    // Wildcard pattern on simple enum
+    var c = Green;
+    match c {
+        Red => printf("red\n")
+        _ => printf("non-red\n")
+    }
+
+    // Match on expression (not just a variable)
+    match 3 {
+        1 => printf("one\n")
+        2 => printf("two\n")
+        default => printf("three\n")
+    }
+
+    printf("Done!\n");
+}

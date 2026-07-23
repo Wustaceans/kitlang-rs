@@ -1,5 +1,6 @@
 mod enum_gen;
 mod header;
+mod match_pattern;
 
 use std::collections::HashSet;
 use std::env;
@@ -279,6 +280,7 @@ impl CodegenCtx<'_> {
                 s
             }
             Stmt::For { var, iter, body } => self.transpile_for(var, iter, body),
+            Stmt::Match(m) => self.transpile_match_stmt(m),
             Stmt::Break => "break;\n".to_string(),
             Stmt::Continue => "continue;\n".to_string(),
         }
