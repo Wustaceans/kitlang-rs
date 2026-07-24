@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::codegen::ast::{Attributed, Program};
 use crate::codegen::module::{Module, ModulePath};
@@ -30,24 +30,28 @@ impl NameSets {
                 .iter()
                 .map(|f| f.name.clone())
                 .collect(),
+
             globals: module
                 .program
                 .globals
                 .iter()
                 .map(|g| g.name.clone())
                 .collect(),
+
             structs: module
                 .program
                 .structs
                 .iter()
                 .map(|s| s.name.clone())
                 .collect(),
+
             enums: module
                 .program
                 .enums
                 .iter()
                 .map(|e| e.name.clone())
                 .collect(),
+
             typedefs: module
                 .program
                 .typedefs
@@ -69,6 +73,18 @@ fn filter_by_name<T: Clone>(
         .filter(|item| names.contains(get_name(item)))
         .cloned()
         .collect()
+}
+
+/// Compute a deterministic DJB2 hash from a module's source file path to use as a suffix in
+/// generated header filenames. This avoids collisions with system or third-party C headers by
+/// making every generated header name unique.
+fn module_header_hash(source_path: &Path) -> String {
+    let path_str = source_path.to_string_lossy();
+    let mut h = 5381u64;
+    for b in path_str.bytes() {
+        h = h.wrapping_mul(33).wrapping_add(b as u64);
+    }
+    format!("{:016x}", h)
 }
 
 impl CodegenCtx<'_> {
@@ -100,7 +116,11 @@ impl CodegenCtx<'_> {
                 };
 
                 let header = self.generate_module_header_from_program(&filtered, module);
-                let h_name = format!("{}.h", path.join("_"));
+                let h_name = format!(
+                    "{}_{}.h",
+                    path.join("_"),
+                    module_header_hash(&module.source_path)
+                );
                 fs::write(self.build_dir.join(&h_name), header).map_err(CompilationError::Io)?;
 
                 let c_code = self.generate_module_c_code_from_program(&filtered, module);
@@ -134,8 +154,9 @@ impl CodegenCtx<'_> {
         out.push('\n');
 
         for import in &module.imports {
-            if self.registry.contains(&import.path) {
-                let dep = format!("{}.h", import.path.join("_"));
+            if let Some(dep_module) = self.registry.get(&import.path) {
+                let hash = module_header_hash(&dep_module.source_path);
+                let dep = format!("{}_{}.h", import.path.join("_"), hash);
                 let _ = writeln!(out, "#include \"{}\"", dep);
             }
         }
@@ -201,17 +222,19 @@ impl CodegenCtx<'_> {
     /// Generate a per-module C source file using the filtered (inferred) program data.
     fn generate_module_c_code_from_program(&self, prog: &Program, module: &Module) -> String {
         let mut out = String::new();
-        let header = format!("{}.h", module.path.join("_"));
+        let hash = module_header_hash(&module.source_path);
+        let header = format!("{}_{}.h", module.path.join("_"), hash);
         let _ = writeln!(out, "#include \"{}\"", header);
 
         for import in &module.imports {
-            if self.registry.contains(&import.path) {
-                let dep = format!("{}.h", import.path.join("_"));
+            if let Some(dep_module) = self.registry.get(&import.path) {
+                let hash = module_header_hash(&dep_module.source_path);
+                let dep = format!("{}_{}.h", import.path.join("_"), hash);
                 let _ = writeln!(out, "#include \"{}\"", dep);
             }
         }
         for inc in &module.includes {
-            let _ = writeln!(out, "#include \"{}\"", inc.path);
+            let _ = writeln!(out, "#include <{}>", inc.path);
         }
         out.push('\n');
 
