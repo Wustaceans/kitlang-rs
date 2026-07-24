@@ -102,109 +102,16 @@ impl CodegenCtx<'_> {
                 bindings: vec![],
             },
             Expr::Identifier { name, .. } => {
-                if let Some(info) = self
-                    .inferencer
-                    .symbols()
-                    .lookup_enum_variant_by_simple_name(name)
-                {
-                    let enum_name = &info.enum_name;
-                    if let Some(enum_def) = self.inferencer.symbols().lookup_enum(enum_name) {
-                        let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
-                        let mangled = mangle_enum_variant(&self.current_module, enum_name, name);
-                        if all_simple {
-                            return PatternMatch {
-                                condition: format!("{matched_value} == {mangled}"),
-                                bindings: vec![],
-                            };
-                        } else if info.arg_types.is_empty() {
-                            let discriminant = format!("{matched_value}._discriminant");
-                            return PatternMatch {
-                                condition: format!("{discriminant} == {mangled}"),
-                                bindings: vec![],
-                            };
-                        }
-                    }
-                }
-                let ctype = self.resolve_type_to_c_name(matched_ty, "int");
-                PatternMatch {
-                    condition: "1".to_string(),
-                    bindings: vec![(name.clone(), ctype, matched_value.to_string())],
-                }
+                self.decompose_identifier_pattern(name, matched_ty, matched_value)
             }
-            Expr::Call {
-                callee,
-                args,
-                ty: _,
-            } => {
+            Expr::Call { callee, args, .. } => {
                 if let Expr::Identifier {
                     name: variant_name, ..
                 } = callee.as_ref()
-                    && let Some(info) = self
-                        .inferencer
-                        .symbols()
-                        .lookup_enum_variant_by_simple_name(variant_name)
+                    && let Some(pm) =
+                        self.decompose_enum_variant_call_pattern(variant_name, args, matched_value)
                 {
-                    let enum_name = &info.enum_name;
-                    let enum_def = self.inferencer.symbols().lookup_enum(enum_name).cloned();
-
-                    if let Some(ref enum_def) = enum_def {
-                        let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
-
-                        if all_simple {
-                            let mangled =
-                                mangle_enum_variant(&self.current_module, enum_name, variant_name);
-                            return PatternMatch {
-                                condition: format!("{matched_value} == {mangled}"),
-                                bindings: vec![],
-                            };
-                        } else {
-                            let discriminant = format!("{matched_value}._discriminant");
-                            let mangled =
-                                mangle_enum_variant(&self.current_module, enum_name, variant_name);
-                            let variant_union = variant_name.to_lowercase();
-                            let variant_data = format!("{matched_value}._variant.{variant_union}");
-
-                            let variant_def =
-                                enum_def.variants.iter().find(|v| v.name == *variant_name);
-
-                            let mut conditions = vec![format!("{discriminant} == {mangled}")];
-                            let mut bindings = Vec::new();
-
-                            for (i, arg_pattern) in args.iter().enumerate() {
-                                debug_assert!(
-                                    i < info.arg_types.len(),
-                                    "pattern arg {} exceeds {} declared fields for variant {}",
-                                    i,
-                                    info.arg_types.len(),
-                                    variant_name,
-                                );
-                                let field_ty = info.arg_types[i];
-                                let field_name = variant_def
-                                    .and_then(|vd| vd.args.get(i))
-                                    .map(|a| &a.name)
-                                    .cloned()
-                                    .unwrap_or_else(|| format!("arg{i}"));
-                                let field_value = format!("{variant_data}.{field_name}");
-                                let inner =
-                                    self.decompose_pattern(arg_pattern, field_ty, &field_value);
-                                if !inner.condition.is_empty() && inner.condition != "1" {
-                                    conditions.push(inner.condition);
-                                }
-                                bindings.extend(inner.bindings);
-                            }
-
-                            let condition = if conditions.is_empty() {
-                                "1".to_string()
-                            } else {
-                                conditions.join(" && ")
-                            };
-
-                            return PatternMatch {
-                                condition,
-                                bindings,
-                            };
-                        }
-                    }
+                    return pm;
                 }
                 let pattern_val = self.transpile_expr(pattern);
                 PatternMatch {
@@ -240,5 +147,124 @@ impl CodegenCtx<'_> {
                 }
             }
         }
+    }
+
+    /// If `name` is an enum variant, return a PatternMatch comparing it against
+    /// `matched_value`.  Returns `None` for non-variant identifiers (plain bindings).
+    fn decompose_identifier_pattern(
+        &self,
+        name: &str,
+        matched_ty: TypeId,
+        matched_value: &str,
+    ) -> PatternMatch {
+        let info = match self
+            .inferencer
+            .symbols()
+            .lookup_enum_variant_by_simple_name(name)
+        {
+            Some(info) => info,
+            None => return self.binding_pattern(name, matched_ty, matched_value),
+        };
+        let enum_name = &info.enum_name;
+        let enum_def = match self.inferencer.symbols().lookup_enum(enum_name) {
+            Some(def) => def,
+            None => return self.binding_pattern(name, matched_ty, matched_value),
+        };
+        let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
+        let mangled = mangle_enum_variant(&self.current_module, enum_name, name);
+
+        if all_simple {
+            return PatternMatch {
+                condition: format!("{matched_value} == {mangled}"),
+                bindings: vec![],
+            };
+        }
+        if info.arg_types.is_empty() {
+            let discriminant = format!("{matched_value}._discriminant");
+            return PatternMatch {
+                condition: format!("{discriminant} == {mangled}"),
+                bindings: vec![],
+            };
+        }
+        // Variant has args but we're just a bare identifier – treat as binding.
+        self.binding_pattern(name, matched_ty, matched_value)
+    }
+
+    /// Produce a binding pattern: matches everything and binds `name` to `matched_value`.
+    fn binding_pattern(&self, name: &str, matched_ty: TypeId, matched_value: &str) -> PatternMatch {
+        let ctype = self.resolve_type_to_c_name(matched_ty, "int");
+        PatternMatch {
+            condition: "1".to_string(),
+            bindings: vec![(name.to_string(), ctype, matched_value.to_string())],
+        }
+    }
+
+    /// If `callee` is an enum variant constructor call, decompose it into a
+    /// discriminant check and field bindings.  Returns `None` for non-variant calls.
+    fn decompose_enum_variant_call_pattern(
+        &self,
+        variant_name: &str,
+        args: &[Expr],
+        matched_value: &str,
+    ) -> Option<PatternMatch> {
+        let info = self
+            .inferencer
+            .symbols()
+            .lookup_enum_variant_by_simple_name(variant_name)?;
+        let enum_name = &info.enum_name;
+        let enum_def = self.inferencer.symbols().lookup_enum(enum_name)?.clone();
+
+        let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
+        let mangled = mangle_enum_variant(&self.current_module, enum_name, variant_name);
+
+        if all_simple {
+            return Some(PatternMatch {
+                condition: format!("{matched_value} == {mangled}"),
+                bindings: vec![],
+            });
+        }
+
+        // Complex enum: check discriminant and extract fields.
+        let discriminant = format!("{matched_value}._discriminant");
+        let variant_union = variant_name.to_lowercase();
+        let variant_data = format!("{matched_value}._variant.{variant_union}");
+
+        let variant_def = enum_def.variants.iter().find(|v| v.name == *variant_name);
+
+        let mut conditions = vec![format!("{discriminant} == {mangled}")];
+        let mut bindings = Vec::new();
+
+        for (i, arg_pattern) in args.iter().enumerate() {
+            debug_assert!(
+                i < info.arg_types.len(),
+                "pattern arg {} exceeds {} declared fields for variant {}",
+                i,
+                info.arg_types.len(),
+                variant_name,
+            );
+            let field_ty = info.arg_types[i];
+            let field_name = variant_def
+                .and_then(|vd| vd.args.get(i))
+                .map(|a| &a.name)
+                .cloned()
+                .unwrap_or_else(|| format!("arg{i}"));
+            let field_value = format!("{variant_data}.{field_name}");
+            let inner = self.decompose_pattern(arg_pattern, field_ty, &field_value);
+            if !inner.condition.is_empty() && inner.condition != "1" {
+                conditions.push(inner.condition);
+            }
+            bindings.extend(inner.bindings);
+        }
+
+        let condition = if conditions.is_empty() {
+            "1".to_string()
+        } else {
+            conditions.join(" && ")
+        };
+
+        Some(PatternMatch {
+            condition,
+            bindings,
+        })
     }
 }

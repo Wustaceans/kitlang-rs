@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use super::Field;
 use super::ast::{Block, Expr, Function, GlobalDecl, Literal, MatchStmt, Program, Stmt};
 use super::symbols::{EnumVariantInfo, SymbolTable};
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
 use super::types::{BinaryOperator, Type, TypeId, TypeStore, UnaryOperator};
+use super::{Field, TypeDef};
 use crate::codegen::parser::expr_pratt::callee_name;
 use crate::error::{CompilationError, CompileResult};
 use crate::type_err;
@@ -80,8 +80,8 @@ impl TypeInferencer {
                 let init_ty = self.infer_expr(init_expr)?;
 
                 // Check if global has type annotation
-                // If annotated, unify annotation with inferred type from initializer
-                // and use annotation type as result (enforces type from annotation)
+                // If annotated, unify annotation with inferred type from initializer and use
+                // annotation type as result (enforces type from annotation)
                 global.inferred = if let Some(ann) = &global.annotation {
                     let ann_ty = self.store.new_known(ann.clone());
                     self.unify(ann_ty, init_ty)?;
@@ -99,9 +99,9 @@ impl TypeInferencer {
                 global.inferred = self.store.new_known(ann.clone());
                 self.symbols.define_global(&global.name, global.inferred);
             } else {
-                // The Kit grammar allows both `:` type_annotation and `= expr` to be
-                // absent independently (e.g. `var x;`), but without either there is no
-                // way to determine the variable's type, so this is a semantic error.
+                // The Kit grammar allows both `:` type_annotation and `= expr` to be absent
+                // independently (e.g. `var x;`), but without either there is no way to determine
+                // the variable's type, so this is a semantic error.
                 return Err(type_err!(
                     "Global variable '{}' declared without type annotation or initializer",
                     global.name
@@ -169,7 +169,7 @@ impl TypeInferencer {
     }
 
     /// Register typedef aliases in the type store so they can be resolved during unification.
-    fn register_typedefs(&mut self, typedefs: &[super::type_ast::TypeDef]) {
+    fn register_typedefs(&mut self, typedefs: &[TypeDef]) {
         for td in typedefs {
             self.store
                 .register_typedef(td.name.clone(), td.type_def.clone());
@@ -197,8 +197,8 @@ impl TypeInferencer {
 
         self.current_return_type = None;
 
-        // Pop function scope (discards params and local vars - they're no longer needed
-        // after inference since codegen uses the AST's TypeId fields directly)
+        // Pop function scope (discards params and local vars - they're no longer needed after
+        // inference since codegen uses the AST's TypeId fields directly)
         self.symbols.pop_scope();
 
         // Register function signature in symbol table
@@ -401,29 +401,20 @@ impl TypeInferencer {
                 if let Expr::Identifier {
                     name: variant_name, ..
                 } = callee.as_ref()
-                {
-                    // Look up the variant info
-                    let variant_info = self
+                    && let Some(info) = self
                         .symbols
                         .lookup_enum_variant_by_simple_name(variant_name)
-                        .cloned();
-                    if let Some(info) = variant_info {
-                        let enum_ty = self.store.new_known(Type::Named(info.enum_name.clone()));
-                        *ty = enum_ty;
-
-                        // Use the arg types already resolved by register_enum_types
-                        let arg_types = info.arg_types.clone();
-
-                        // Infer each argument pattern
-                        for (arg, &expected_ty) in args.iter_mut().zip(arg_types.iter()) {
-                            let arg_ty = self.infer_pattern(arg)?;
-                            self.unify(expected_ty, arg_ty)?;
-                        }
-
-                        return Ok(enum_ty);
+                        .cloned()
+                {
+                    let enum_ty = self.store.new_known(Type::Named(info.enum_name.clone()));
+                    *ty = enum_ty;
+                    let arg_types = info.arg_types.clone();
+                    for (arg, &expected_ty) in args.iter_mut().zip(arg_types.iter()) {
+                        let arg_ty = self.infer_pattern(arg)?;
+                        self.unify(expected_ty, arg_ty)?;
                     }
+                    return Ok(enum_ty);
                 }
-                // Fallback: regular expression inference
                 self.infer_expr(pattern)
             }
             other => self.infer_expr(other),
@@ -445,32 +436,26 @@ impl TypeInferencer {
                 Ok(())
             }
             Expr::Call { callee, args, .. } => {
-                // For enum constructor patterns like `SomeInt(x)`, look up the
-                // variant info to determine each argument's type
                 if let Expr::Identifier {
                     name: variant_name, ..
                 } = callee.as_ref()
-                {
-                    // Clone the arg types to release the borrow on self.symbols
-                    let arg_types: Option<Vec<TypeId>> = self
+                    && let Some(expected_types) = self
                         .symbols
                         .lookup_enum_variant_by_simple_name(variant_name)
-                        .map(|info| info.arg_types.to_vec());
-                    if let Some(expected_types) = arg_types {
-                        if args.len() == expected_types.len() {
-                            for (arg, &expected_ty) in args.iter().zip(expected_types.iter()) {
-                                self.extract_pattern_bindings(arg, expected_ty)?;
-                            }
-                            return Ok(());
-                        }
-                        debug_assert!(
-                            false,
+                        .map(|info| info.arg_types.to_vec())
+                {
+                    if args.len() != expected_types.len() {
+                        return Err(type_err!(
                             "pattern '{}' has {} args but variant expects {}",
                             variant_name,
                             args.len(),
                             expected_types.len(),
-                        );
+                        ));
                     }
+                    for (arg, &expected_ty) in args.iter().zip(expected_types.iter()) {
+                        self.extract_pattern_bindings(arg, expected_ty)?;
+                    }
+                    return Ok(());
                 }
                 for arg in args {
                     self.extract_pattern_bindings(arg, matched_ty)?;

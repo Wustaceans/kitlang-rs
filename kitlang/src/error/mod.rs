@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use thiserror::Error;
 
 /// A source-code location, used to attach line/column information to compiler
@@ -124,20 +125,20 @@ impl CompilationError {
     }
 }
 
-/// Append a single-line source snippet with a caret pointing at the error
-/// column to `out`.
+/// Append a single-line source snippet with a caret pointing at the error column to `out`.
 fn render_snippet(out: &mut String, ctx: &ErrorContext) {
     let line_idx = ctx.span.line.saturating_sub(1);
     let Some(line) = ctx.source.lines().nth(line_idx) else {
         return;
     };
     let gutter = format!("{} | ", ctx.span.line);
-    out.push_str(&format!("{gutter}{line}\n"));
+    let _ = writeln!(out, "{gutter}{line}");
+
     let pad: String =
         std::iter::repeat_n(' ', gutter.len() + ctx.span.column.saturating_sub(1)).collect();
     let caret_len = ctx.span.length.max(1);
     let carets: String = std::iter::repeat_n('^', caret_len).collect();
-    out.push_str(&format!("{pad}{carets}\n"));
+    let _ = writeln!(out, "{pad}{carets}");
 }
 
 /// Helper macro to create a `CompilationError::ParseError`
