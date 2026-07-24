@@ -5,6 +5,7 @@ use pest::iterators::Pair;
 use strum::{EnumString, IntoStaticStr};
 
 use std::collections::HashSet;
+use std::fmt;
 use std::str::FromStr;
 
 /// Identity handle for a type in `TypeStore`.
@@ -325,8 +326,7 @@ impl TypeStore {
 
             // Everything else is a type mismatch
             _ => Err(CompilationError::TypeError(format!(
-                "Type mismatch: {:?} vs {:?}",
-                a_ty, b_ty
+                "Type mismatch: {a_ty} vs {b_ty}",
             ))),
         }
     }
@@ -421,6 +421,48 @@ pub enum Type {
         param_tys: Vec<Type>,
         ret_ty: Box<Type>,
     },
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Named(name) => write!(f, "{name}"),
+            Type::Ptr(inner) => write!(f, "Ptr({inner})"),
+            Type::Int8 => write!(f, "Int8"),
+            Type::Int16 => write!(f, "Int16"),
+            Type::Int32 => write!(f, "Int32"),
+            Type::Int64 => write!(f, "Int64"),
+            Type::Uint8 => write!(f, "Uint8"),
+            Type::Uint16 => write!(f, "Uint16"),
+            Type::Uint32 => write!(f, "Uint32"),
+            Type::Uint64 => write!(f, "Uint64"),
+            Type::Float32 => write!(f, "Float32"),
+            Type::Float64 => write!(f, "Float64"),
+            Type::Int => write!(f, "Int"),
+            Type::Float => write!(f, "Float"),
+            Type::Size => write!(f, "Size"),
+            Type::Char => write!(f, "Char"),
+            Type::Bool => write!(f, "Bool"),
+            Type::CString => write!(f, "CString"),
+            Type::Tuple(variants) => {
+                let items: Vec<String> = variants.iter().map(|t| t.to_string()).collect();
+                write!(f, "({})", items.join(", "))
+            }
+            Type::CArray(elem, size) => {
+                if *size == 0 {
+                    write!(f, "{elem}[]")
+                } else {
+                    write!(f, "{elem}[{size}]")
+                }
+            }
+            Type::Void => write!(f, "Void"),
+            Type::Struct { name, .. } => write!(f, "{name}"),
+            Type::Function { param_tys, ret_ty } => {
+                let params: Vec<String> = param_tys.iter().map(|t| t.to_string()).collect();
+                write!(f, "fn({}) -> {ret_ty}", params.join(", "))
+            }
+        }
+    }
 }
 
 impl Type {

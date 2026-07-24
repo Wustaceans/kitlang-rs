@@ -55,7 +55,11 @@ pub enum CompilationError {
     #[error("Type error: {0}")]
     TypeError(String),
 
-    #[error("Failed to compile C code:\n{}", String::from_utf8_lossy(.0))]
+    #[error(r#"C compiler/linker failed.
+The generated C code may have compiled, but linking failed (missing library?).
+Pass --libs <name> or use include "path" => "libname" in Kit to link libraries.
+
+{}"#, String::from_utf8_lossy(.0))]
     CCompileError(Vec<u8>),
 
     #[error("Failed to find system C toolchain")]

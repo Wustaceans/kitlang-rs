@@ -351,7 +351,7 @@ impl TypeInferencer {
                     Type::Int | Type::Void => self.store.new_known(Type::Int),
                     other => {
                         return Err(type_err!(
-                            "For loop iterator must be Int, Range, or Array, found {other:?}"
+                            "For loop iterator must be Int, Range, or Array, found {other}"
                         ));
                     }
                 };
@@ -679,7 +679,7 @@ impl TypeInferencer {
                         return Ok(ret_ty_id);
                     }
                     // Resolved to a non-callable type.
-                    return Err(type_err!("Cannot call a value of type {callee_ty:?}"));
+                    return Err(type_err!("Cannot call a value of type {callee_ty}"));
                 }
             }
             Err(e) => {
@@ -694,16 +694,18 @@ impl TypeInferencer {
         }
 
         // C interop: only for names absent from the symbol table.
+        // Use a fresh type variable as the return type so it can be unified with the actual type
+        // from context (e.g., Bool for while conditions).
         if let Some(name) = callee_name(callee)
             && self.symbols.lookup_function(&name).is_none()
             && self.symbols.lookup_global(&name).is_none()
         {
-            let void_ty = self.store.new_known(Type::Void);
+            let ret_ty = self.store.new_unknown();
             for arg in args.iter_mut() {
                 self.infer_expr(arg)?;
             }
-            *ty = void_ty;
-            return Ok(void_ty);
+            *ty = ret_ty;
+            return Ok(ret_ty);
         }
 
         let msg = if infer_failed_on_name {
@@ -772,9 +774,7 @@ impl TypeInferencer {
                 if let Type::Ptr(inner_ty) = resolved {
                     self.store.new_known(*inner_ty)
                 } else {
-                    return Err(type_err!(
-                        "Cannot dereference non-pointer type: {resolved:?}"
-                    ));
+                    return Err(type_err!("Cannot dereference non-pointer type: {resolved}"));
                 }
             }
             _ => expr_ty,
@@ -1173,7 +1173,7 @@ impl TypeInferencer {
             Type::CArray(elem_type, _) => self.store.new_known(*elem_type),
             Type::Ptr(inner) => self.store.new_known(*inner),
             _ => {
-                return Err(type_err!("Cannot index non-array type: {resolved:?}"));
+                return Err(type_err!("Cannot index non-array type: {resolved}"));
             }
         };
         *ty = elem_ty;
