@@ -10,12 +10,12 @@ use crate::codegen::types::{AssignmentOperator, BinaryOperator, UnaryOperator};
 
 /// Parse an expression and unwrap
 fn p(text: &str) -> Expr {
-    parse_kit_expr(text).unwrap_or_else(|e| panic!("parse failed for `{text}`: {e}"))
+    parse_kit_expr(text, text, 0).unwrap_or_else(|e| panic!("parse failed for `{text}`: {e}"))
 }
 
 /// Parse and assert the error contains a substring.
 fn p_err(text: &str, needle: &str) {
-    let err = parse_kit_expr(text)
+    let err = parse_kit_expr(text, text, 0)
         .err()
         .unwrap_or_else(|| panic!("expected error for `{text}`, got Ok"));
     let msg = err.to_human_message();
@@ -472,7 +472,7 @@ fn missing_rparen() {
 #[test]
 fn range_literal_simple() {
     let e = p("1...5");
-    if let Expr::RangeLiteral { start, end } = &e {
+    if let Expr::RangeLiteral { start, end, .. } = &e {
         assert!(matches!(
             start.as_ref(),
             Expr::Literal {
@@ -496,7 +496,7 @@ fn range_literal_simple() {
 #[test]
 fn range_literal_with_expressions() {
     let e = p("a + 1...b - 1");
-    if let Expr::RangeLiteral { start, end } = &e {
+    if let Expr::RangeLiteral { start, end, .. } = &e {
         assert!(matches!(
             start.as_ref(),
             Expr::BinaryOp {
@@ -549,7 +549,7 @@ fn trailing_tokens_produce_error() {
 /// `a $ b` - `$` is an unrecognized character error.
 #[test]
 fn unrecognized_characters_produce_error() {
-    let err = parse_kit_expr("a $ b").expect_err("should error on $");
+    let err = parse_kit_expr("a $ b", "a $ b", 0).expect_err("should error on $");
     let msg = err.to_human_message();
     assert!(msg.contains("unexpected character"), "msg: {msg}");
 }
@@ -557,7 +557,7 @@ fn unrecognized_characters_produce_error() {
 /// Literal exceeding i64 range produces overflow error.
 #[test]
 fn integer_overflow_is_detected() {
-    let err = parse_kit_expr("99999999999999999999").expect_err("should error on overflow literal");
+    let err = parse_kit_expr("99999999999999999999", "99999999999999999999", 0).expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -569,7 +569,7 @@ fn integer_overflow_is_detected() {
 #[test]
 fn integer_overflow_as_left_operand_is_detected() {
     let err =
-        parse_kit_expr("99999999999999999999 + 1").expect_err("should error on overflow literal");
+        parse_kit_expr("99999999999999999999 + 1", "99999999999999999999 + 1", 0).expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -581,7 +581,7 @@ fn integer_overflow_as_left_operand_is_detected() {
 #[test]
 fn integer_overflow_as_right_operand_is_detected() {
     let err =
-        parse_kit_expr("1 + 99999999999999999999").expect_err("should error on overflow literal");
+        parse_kit_expr("1 + 99999999999999999999", "1 + 99999999999999999999", 0).expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -592,14 +592,14 @@ fn integer_overflow_as_right_operand_is_detected() {
 /// Missing `)` uses `ExpectedEof` variant, not the `Semi` sentinel.
 #[test]
 fn eof_uses_unexpected_eof_not_semi() {
-    let err = parse_kit_expr("(1 + 2").expect_err("should error on missing )");
+    let err = parse_kit_expr("(1 + 2", "(1 + 2", 0).expect_err("should error on missing )");
     let msg = err.to_human_message();
     assert!(
         msg.contains("end of expression"),
         "expected 'end of expression', got: {msg}"
     );
     // Also verify the existing test still works:
-    let missing_rparen = parse_kit_expr("(1 + 2").expect_err("should error on missing )");
+    let missing_rparen = parse_kit_expr("(1 + 2", "(1 + 2", 0).expect_err("should error on missing )");
     assert!(missing_rparen.to_human_message().contains("`)`"));
 }
 
@@ -629,7 +629,7 @@ fn indirect_call_is_parsed() {
 /// `x++` - postfix `++` is rejected (not supported in Kit).
 #[test]
 fn postfix_increment_is_now_an_error() {
-    let err = parse_kit_expr("x++").expect_err("should error on trailing ++");
+    let err = parse_kit_expr("x++", "x++", 0).expect_err("should error on trailing ++");
     let msg = err.to_human_message();
     assert!(
         msg.contains("PlusPlus") || msg.contains("end of expression"),
@@ -640,7 +640,7 @@ fn postfix_increment_is_now_an_error() {
 /// `x--` - postfix `--` is rejected (not supported in Kit).
 #[test]
 fn postfix_decrement_is_now_an_error() {
-    let err = parse_kit_expr("x--").expect_err("should error on trailing --");
+    let err = parse_kit_expr("x--", "x--", 0).expect_err("should error on trailing --");
     let msg = err.to_human_message();
     assert!(
         msg.contains("MinusMinus") || msg.contains("end of expression"),
@@ -651,7 +651,7 @@ fn postfix_decrement_is_now_an_error() {
 /// `sizeof(i32)` - `sizeof` keyword is rejected (not supported in Kit).
 #[test]
 fn sizeof_is_not_supported() {
-    let err = parse_kit_expr("sizeof(i32)").expect_err("sizeof should error");
+    let err = parse_kit_expr("sizeof(i32)", "sizeof(i32)", 0).expect_err("sizeof should error");
     let msg = err.to_human_message();
     assert!(msg.contains("Sizeof"), "msg: {msg}");
 }

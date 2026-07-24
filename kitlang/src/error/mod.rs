@@ -3,7 +3,7 @@ use thiserror::Error;
 
 /// A source-code location, used to attach line/column information to compiler
 /// errors so the CLI can render a source snippet.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Span {
     /// 1-based line number.
     pub line: usize,
@@ -24,6 +24,19 @@ impl Span {
             column,
             offset: span.start(),
             length: span.end() - span.start(),
+        }
+    }
+
+    /// Build a `Span` from a byte offset into source text.
+    /// Computes line/column by scanning the source up to the offset.
+    pub fn from_offset(source: &str, offset: usize, length: usize) -> Self {
+        let line = source[..offset].lines().count();
+        let column = offset - source[..offset].rfind('\n').map_or(0, |i| i + 1) + 1;
+        Self {
+            line,
+            column,
+            offset,
+            length,
         }
     }
 }

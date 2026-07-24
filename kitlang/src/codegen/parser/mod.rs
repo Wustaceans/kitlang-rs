@@ -56,7 +56,7 @@ impl<'a> PestExpr<'a> {
             source: self.source.clone(),
             span,
         };
-        expr_pratt::parse_kit_expr(text)
+        expr_pratt::parse_kit_expr(text, &self.source, self.pair.as_span().start())
             .map_err(|e| CompilationError::ParseError(e.to_human_message()).with_context(ctx))
     }
 }
@@ -687,11 +687,13 @@ impl Parser {
             .map(|p| self.parse_expr(p))
             .transpose()?;
 
+        let span = Some(Span::from_pest(&pair.as_span()));
         Ok(Stmt::VarDecl {
             name,
             annotation,
             inferred: TypeId::default(),
             init,
+            span,
         })
     }
 
@@ -842,11 +844,13 @@ impl Parser {
             cond,
             then_branch,
             else_branch,
+            span: Some(Span::from_pest(&parent_span)),
         })
     }
 
     fn parse_while_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
+        let span = Some(Span::from_pest(&parent_span));
         // while_stmt = { "while" ~ expr ~ block }
         let mut inner = pair.into_inner();
         let cond = self.parse_expr(inner.next().ok_or_else(|| {
@@ -857,11 +861,12 @@ impl Parser {
             parse_error!("while statement missing body")
                 .with_context(self.context_from_span(&parent_span))
         })?)?;
-        Ok(Stmt::While { cond, body })
+        Ok(Stmt::While { cond, body, span })
     }
 
     fn parse_for_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
+        let span = Some(Span::from_pest(&parent_span));
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
         let mut inner = pair.into_inner();
         let var = Self::pair_text(inner.next().ok_or_else(|| {
@@ -876,11 +881,12 @@ impl Parser {
             parse_error!("for statement missing body")
                 .with_context(self.context_from_span(&parent_span))
         })?)?;
-        Ok(Stmt::For { var, iter, body })
+        Ok(Stmt::For { var, iter, body, span })
     }
 
     fn parse_match_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
+        let span = Some(Span::from_pest(&parent_span));
         // match_stmt = { "match" ~ expr ~ "{" ~ (match_case)* ~ (default_case)? ~ "}" }
         let mut inner = pair.into_inner();
         let expr = self.parse_expr(inner.next().ok_or_else(|| {
@@ -905,7 +911,11 @@ impl Parser {
                     let body = Block {
                         stmts: vec![Stmt::Expr(body_expr)],
                     };
-                    arms.push(MatchArm { pattern, body });
+                    arms.push(MatchArm {
+                        pattern,
+                        body,
+                        span: Some(Span::from_pest(&case_span)),
+                    });
                 }
                 Rule::default_case => {
                     let def_span = child.as_span();
@@ -923,6 +933,7 @@ impl Parser {
             }
         }
         if let Some(def) = default_arm {
+            let match_span = parent_span;
             arms.push(MatchArm {
                 // `ty: TypeId::default()` is a sentinel — the codegen always
                 // checks `name == "default"` before touching `ty`, so this is
@@ -931,13 +942,16 @@ impl Parser {
                 pattern: Expr::Identifier {
                     name: "default".to_string(),
                     ty: TypeId::default(),
+                    span: None,
                 },
                 body: def,
+                span: Some(Span::from_pest(&match_span)),
             });
         }
         Ok(Stmt::Match(MatchStmt {
             expr: Box::new(expr),
             arms,
+            span,
         }))
     }
 }

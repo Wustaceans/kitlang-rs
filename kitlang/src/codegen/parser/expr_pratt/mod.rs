@@ -34,6 +34,7 @@
 
 use crate::codegen::ast::Expr;
 use crate::codegen::types::TypeId;
+use crate::error::Span as ErrorSpan;
 use crate::lexer::{LexicalError, SpannedTok, Tok, tokenize};
 
 use super::binding_power::{
@@ -48,13 +49,29 @@ use super::diagnostics::{ExprParseError, expected_name};
 pub(crate) struct ExprParser<'a> {
     tokens: &'a [SpannedTok],
     pos: usize,
+    /// Full source text of the file, used to compute line/column for spans.
+    source_text: &'a str,
+    /// Byte offset of the expression within the full source text.
+    base_offset: usize,
 }
 
 impl<'a> ExprParser<'a> {
     /// Build a parser over a token slice. The slice must be the result of
     /// [`tokenize`] applied to the expression's source text.
-    pub(crate) fn new(tokens: &'a [SpannedTok]) -> Self {
-        Self { tokens, pos: 0 }
+    pub(crate) fn new(tokens: &'a [SpannedTok], source_text: &'a str, base_offset: usize) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            source_text,
+            base_offset,
+        }
+    }
+
+    /// Compute an `ErrorSpan` from a byte range relative to the expression text.
+    fn spanned(&self, start: usize, end: usize) -> Option<ErrorSpan> {
+        let offset = self.base_offset.checked_add(start)?;
+        let length = end.checked_sub(start)?;
+        Some(ErrorSpan::from_offset(self.source_text, offset, length))
     }
 
     /// Entry point. Parses one complete expression and returns it.
@@ -106,12 +123,16 @@ impl<'a> ExprParser<'a> {
         // so `&arr[i]` = `&(arr[i])` (postfix on `arr` first).
         let mut lhs = if let Some(pfx_bp) = prefix(&self.peek().kind) {
             let op = tok_to_unary_op(&self.peek().kind).unwrap();
+            let prefix_tok_span = self.peek().span.clone();
             self.advance();
             let rhs = self.parse_pratt(pfx_bp)?;
+            let rhs_span = rhs.span().map(|s| s.offset + s.length).unwrap_or(prefix_tok_span.end);
+            let start_offset = prefix_tok_span.start;
             Expr::UnaryOp {
                 op,
                 expr: Box::new(rhs),
                 ty: TypeId::default(),
+                span: self.spanned(start_offset, rhs_span),
             }
         } else {
             self.parse_primary()?
@@ -132,12 +153,16 @@ impl<'a> ExprParser<'a> {
             if tok_to_assign_op(&kind).is_some() {
                 break;
             }
+            let op_tok_span = self.peek().span.clone();
             self.advance();
             if is_range_op(&kind) {
                 let rhs = self.parse_pratt(rbp)?;
+                let lhs_span = lhs.span().map(|s| s.offset).unwrap_or(op_tok_span.start);
+                let rhs_end = rhs.span().map(|s| s.offset + s.length).unwrap_or(op_tok_span.end);
                 lhs = Expr::RangeLiteral {
                     start: Box::new(lhs),
                     end: Box::new(rhs),
+                    span: self.spanned(lhs_span, rhs_end),
                 };
                 continue;
             }
@@ -145,11 +170,14 @@ impl<'a> ExprParser<'a> {
                 ExprParseError::Custom(format!("internal: no binary op for {kind:?}"))
             })?;
             let rhs = self.parse_pratt(rbp)?;
+            let lhs_span = lhs.span().map(|s| s.offset).unwrap_or(op_tok_span.start);
+            let rhs_end = rhs.span().map(|s| s.offset + s.length).unwrap_or(op_tok_span.end);
             lhs = Expr::BinaryOp {
                 op,
                 left: Box::new(lhs),
                 right: Box::new(rhs),
                 ty: TypeId::default(),
+                span: self.spanned(lhs_span, rhs_end),
             };
         }
 
@@ -169,13 +197,17 @@ impl<'a> ExprParser<'a> {
             if lbp < min_bp {
                 break;
             }
+            let op_tok_span = self.peek().span.clone();
             self.advance();
             let rhs = self.parse_pratt(lbp)?;
+            let lhs_span = lhs.span().map(|s| s.offset).unwrap_or(op_tok_span.start);
+            let rhs_end = rhs.span().map(|s| s.offset + s.length).unwrap_or(op_tok_span.end);
             lhs = Expr::Assign {
                 op,
                 left: Box::new(lhs),
                 right: Box::new(rhs),
                 ty: TypeId::default(),
+                span: self.spanned(lhs_span, rhs_end),
             };
         }
 
@@ -253,7 +285,8 @@ pub(crate) fn callee_name(expr: &Expr) -> Option<String> {
 /// pest-to-Pratt bridge (`PestExpr::parse`).
 ///
 /// The `text` should be the source text of the expression as a `Pair::as_str()` slice.
-/// Tokenization, parsing, and conversion to an `Expr` all happen here.
+/// `full_source` is the full source text of the file, and `base_offset` is the byte offset
+/// of `text` within `full_source`. These are used to compute line/column spans on AST nodes.
 ///
 /// # Errors
 ///
@@ -262,7 +295,11 @@ pub(crate) fn callee_name(expr: &Expr) -> Option<String> {
 /// - Integer literals that overflow `i64`
 /// - Trailing tokens after the expression
 /// - Any parse error from the Pratt loop
-pub(crate) fn parse_kit_expr(text: &str) -> Result<Expr, ExprParseError> {
+pub(crate) fn parse_kit_expr(
+    text: &str,
+    full_source: &str,
+    base_offset: usize,
+) -> Result<Expr, ExprParseError> {
     let tokens = tokenize(text).map_err(|e| match e {
         LexicalError::UnexpectedCharacter { offset } => {
             ExprParseError::Custom(format!("unexpected character at byte offset {}", offset))
@@ -272,7 +309,7 @@ pub(crate) fn parse_kit_expr(text: &str) -> Result<Expr, ExprParseError> {
         }
     })?;
 
-    let mut parser = ExprParser::new(&tokens);
+    let mut parser = ExprParser::new(&tokens, full_source, base_offset);
     let expr = parser.parse_expr()?;
 
     // Reject leftover tokens (e.g. from a stray character that was dropped

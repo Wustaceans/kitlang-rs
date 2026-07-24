@@ -239,6 +239,7 @@ impl CodegenCtx<'_> {
                 annotation: _,
                 inferred,
                 init,
+                ..
             } => {
                 let decl = self.format_var_decl(*inferred, name);
                 match init {
@@ -263,6 +264,7 @@ impl CodegenCtx<'_> {
                 cond,
                 then_branch,
                 else_branch,
+                ..
             } => {
                 let mut s = format!("if ({}) ", self.transpile_expr(cond));
                 s.push_str(&self.transpile_block(then_branch));
@@ -273,13 +275,13 @@ impl CodegenCtx<'_> {
                 s.push('\n');
                 s
             }
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, .. } => {
                 let mut s = format!("while ({}) ", self.transpile_expr(cond));
                 s.push_str(&self.transpile_block(body));
                 s.push('\n');
                 s
             }
-            Stmt::For { var, iter, body } => self.transpile_for(var, iter, body),
+            Stmt::For { var, iter, body, .. } => self.transpile_for(var, iter, body),
             Stmt::Match(m) => self.transpile_match_stmt(m),
             Stmt::Break => "break;\n".to_string(),
             Stmt::Continue => "continue;\n".to_string(),
@@ -320,7 +322,7 @@ impl CodegenCtx<'_> {
             body_code.push('}');
             s.push_str(&body_code);
             s
-        } else if let Expr::RangeLiteral { start, end } = iter {
+        } else if let Expr::RangeLiteral { start, end, .. } = iter {
             let start_str = self.transpile_expr(start);
             let end_str = self.transpile_expr(end);
             let mut s = format!("for (int {var} = {start_str}; {var} < {end_str}; ++{var}) ");
@@ -701,7 +703,7 @@ impl CodegenCtx<'_> {
                 variant_name,
                 ..
             } => self.mangled_enum_variant(enum_name, variant_name),
-            Expr::ArrayLiteral { elements, ty } => self.transpile_array_literal(*ty, elements),
+            Expr::ArrayLiteral { elements, ty, .. } => self.transpile_array_literal(*ty, elements),
             Expr::EnumInit {
                 enum_name,
                 variant_name,

@@ -1,4 +1,5 @@
 use crate::codegen::types::{AssignmentOperator, BinaryOperator, Type, TypeId, UnaryOperator};
+use crate::error::Span;
 
 use super::ModulePath;
 use super::type_ast::{
@@ -152,6 +153,7 @@ pub enum Stmt {
         inferred: TypeId,
         /// Initializer expression (`None` for uninitialized).
         init: Option<Expr>,
+        span: Option<Span>,
     },
     /// Expression statement.
     Expr(Expr),
@@ -165,6 +167,7 @@ pub enum Stmt {
         then_branch: Block,
         /// The block to execute if the condition is false.
         else_branch: Option<Block>,
+        span: Option<Span>,
     },
     /// While loop statement.
     While {
@@ -172,6 +175,7 @@ pub enum Stmt {
         cond: Expr,
         /// The block to execute as long as the condition is true.
         body: Block,
+        span: Option<Span>,
     },
     /// For loop statement.
     For {
@@ -181,6 +185,7 @@ pub enum Stmt {
         iter: Expr,
         /// The block to execute for each iteration.
         body: Block,
+        span: Option<Span>,
     },
     /// Break statement.
     Break,
@@ -197,6 +202,7 @@ pub struct MatchArm {
     pub pattern: Expr,
     /// The block to execute if the pattern matches.
     pub body: Block,
+    pub span: Option<Span>,
 }
 
 /// Represents a match statement: `match expr { arm1; arm2; ... }`.
@@ -206,15 +212,24 @@ pub struct MatchStmt {
     pub expr: Box<Expr>,
     /// The list of match arms (pattern → body).
     pub arms: Vec<MatchArm>,
+    pub span: Option<Span>,
 }
 
 /// Represents an expression in Kit.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     /// Variable or function identifier.
-    Identifier { name: String, ty: TypeId },
+    Identifier {
+        name: String,
+        ty: TypeId,
+        span: Option<Span>,
+    },
     /// Literal value.
-    Literal { value: Literal, ty: TypeId },
+    Literal {
+        value: Literal,
+        ty: TypeId,
+        span: Option<Span>,
+    },
     /// Function call.
     Call {
         /// Callee expression (any expression that evaluates to a callable type).
@@ -223,12 +238,14 @@ pub enum Expr {
         args: Vec<Expr>,
         /// Inferred return type.
         ty: TypeId,
+        span: Option<Span>,
     },
     /// Unary operation.
     UnaryOp {
         op: UnaryOperator,
         expr: Box<Expr>,
         ty: TypeId,
+        span: Option<Span>,
     },
     /// Binary operation.
     BinaryOp {
@@ -237,6 +254,7 @@ pub enum Expr {
         right: Box<Expr>,
         /// Inferred result type.
         ty: TypeId,
+        span: Option<Span>,
     },
     /// Assignment operation.
     Assign {
@@ -245,6 +263,7 @@ pub enum Expr {
         right: Box<Expr>,
         /// Inferred result type.
         ty: TypeId,
+        span: Option<Span>,
     },
     /// If-then-else expression.
     If {
@@ -256,6 +275,7 @@ pub enum Expr {
         else_branch: Box<Expr>,
         /// Inferred result type.
         ty: TypeId,
+        span: Option<Span>,
     },
     /// Range literal expression (e.g., `1...10`).
     RangeLiteral {
@@ -263,6 +283,7 @@ pub enum Expr {
         start: Box<Expr>,
         /// The end of the range (inclusive).
         end: Box<Expr>,
+        span: Option<Span>,
     },
     /// Struct initialization expression (e.g., `Point { x: 10, y: 20 }`).
     StructInit {
@@ -272,6 +293,7 @@ pub enum Expr {
         struct_type: Option<Type>,
         /// Field initializers.
         fields: Vec<FieldInit>,
+        span: Option<Span>,
     },
     /// Field access expression (e.g., `p.x` or `a.b.c`).
     FieldAccess {
@@ -281,6 +303,7 @@ pub enum Expr {
         field_name: String,
         /// Inferred result type.
         ty: TypeId,
+        span: Option<Span>,
     },
     /// Enum variant constructor (simple variant without arguments).
     EnumVariant {
@@ -290,6 +313,7 @@ pub enum Expr {
         variant_name: String,
         /// Inferred type.
         ty: TypeId,
+        span: Option<Span>,
     },
     /// Enum initialization (variant with arguments).
     EnumInit {
@@ -301,13 +325,15 @@ pub enum Expr {
         args: Vec<Expr>,
         /// Inferred type.
         ty: TypeId,
+        span: Option<Span>,
     },
     /// Array literal (e.g., `[1, 2, 3]`). Inferred type is `CArray(element_type, len)`.
     ArrayLiteral {
-        /// The element expressions.
+        /// The element elements.
         elements: Vec<Expr>,
         /// Inferred `CArray` type.
         ty: TypeId,
+        span: Option<Span>,
     },
     /// Array index access (e.g., `arr[i]`).
     Index {
@@ -317,7 +343,29 @@ pub enum Expr {
         index: Box<Expr>,
         /// Inferred element type.
         ty: TypeId,
+        span: Option<Span>,
     },
+}
+
+impl Expr {
+    pub fn span(&self) -> Option<&Span> {
+        match self {
+            Expr::Identifier { span, .. }
+            | Expr::Literal { span, .. }
+            | Expr::Call { span, .. }
+            | Expr::UnaryOp { span, .. }
+            | Expr::BinaryOp { span, .. }
+            | Expr::Assign { span, .. }
+            | Expr::If { span, .. }
+            | Expr::RangeLiteral { span, .. }
+            | Expr::StructInit { span, .. }
+            | Expr::FieldAccess { span, .. }
+            | Expr::EnumVariant { span, .. }
+            | Expr::EnumInit { span, .. }
+            | Expr::ArrayLiteral { span, .. }
+            | Expr::Index { span, .. } => span.as_ref(),
+        }
+    }
 }
 
 /// Represents a literal value in Kit.
