@@ -195,6 +195,17 @@ impl TypeInferencer {
         // Infer function body
         self.infer_block(&mut func.body)?;
 
+        // Functions without an explicit return type that don't return a value implicitly return
+        // void. Use find_rep since is_unknown doesn't follow bindings.
+        if let Some(ret_id) = func.inferred_return {
+            let rep = self.store.find_rep(ret_id);
+            if self.store.is_unknown(rep) {
+                let void_id = self.store.new_known(Type::Void);
+                self.store.unify(ret_id, void_id)?;
+                func.inferred_return = Some(void_id);
+            }
+        }
+
         self.current_return_type = None;
 
         // Pop function scope (discards params and local vars - they're no longer needed after

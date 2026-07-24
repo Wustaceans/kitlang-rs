@@ -116,7 +116,15 @@ fn compile(
     let init = time::Instant::now();
 
     let ext = if cfg!(windows) { "exe" } else { "" };
-    let exe_path = source.with_extension(ext);
+    let mut exe_path = source.with_extension(ext);
+
+    // Canonicalize so Command::new can find it even when the path has no directory separator
+    // (otherwise Command::new searches PATH instead of the current directory).
+    if exe_path.is_relative()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        exe_path = cwd.join(&exe_path);
+    }
 
     let mut compiler = Compiler::new(
         vec![source.to_path_buf()],
