@@ -1,11 +1,6 @@
-// Unit tests for the Pratt parser.
-//
-// Declared as `#[cfg(test)] mod tests;` in the parent module, so this
-// file is a proper child module.
-
 use super::callee_name;
 use super::parse_kit_expr;
-use crate::codegen::ast::{Expr, Literal};
+use crate::codegen::ast::{Expr, ExprKind, Literal};
 use crate::codegen::types::{AssignmentOperator, BinaryOperator, UnaryOperator};
 
 /// Parse an expression and unwrap
@@ -33,8 +28,11 @@ fn integer_literal() {
     let e = p("42");
     assert!(matches!(
         e,
-        Expr::Literal {
-            value: Literal::Int(42),
+        Expr {
+            kind: ExprKind::Literal {
+                value: Literal::Int(42),
+                ..
+            },
             ..
         }
     ));
@@ -45,7 +43,7 @@ fn integer_literal() {
 fn float_literal() {
     let e = p("3.14");
     assert!(
-        matches!(e, Expr::Literal { value: Literal::Float(f), .. } if (f - 3.14).abs() < 1e-10)
+        matches!(e, Expr { kind: ExprKind::Literal { value: Literal::Float(f), .. }, .. } if (f - 3.14).abs() < 1e-10)
     );
 }
 
@@ -53,7 +51,9 @@ fn float_literal() {
 #[test]
 fn string_literal() {
     let e = p(r#""hello""#);
-    assert!(matches!(e, Expr::Literal { value: Literal::String(s), .. } if s == "hello"));
+    assert!(
+        matches!(e, Expr { kind: ExprKind::Literal { value: Literal::String(s), .. }, .. } if s == "hello")
+    );
 }
 
 /// `true` and `false` both parse as `Literal::Bool`.
@@ -61,15 +61,21 @@ fn string_literal() {
 fn bool_literals() {
     assert!(matches!(
         p("true"),
-        Expr::Literal {
-            value: Literal::Bool(true),
+        Expr {
+            kind: ExprKind::Literal {
+                value: Literal::Bool(true),
+                ..
+            },
             ..
         }
     ));
     assert!(matches!(
         p("false"),
-        Expr::Literal {
-            value: Literal::Bool(false),
+        Expr {
+            kind: ExprKind::Literal {
+                value: Literal::Bool(false),
+                ..
+            },
             ..
         }
     ));
@@ -80,8 +86,11 @@ fn bool_literals() {
 fn null_literal() {
     assert!(matches!(
         p("null"),
-        Expr::Literal {
-            value: Literal::Null,
+        Expr {
+            kind: ExprKind::Literal {
+                value: Literal::Null,
+                ..
+            },
             ..
         }
     ));
@@ -93,7 +102,7 @@ fn null_literal() {
 #[test]
 fn identifier() {
     let e = p("foo");
-    assert!(matches!(&e, Expr::Identifier { name, .. } if name == "foo"));
+    assert!(matches!(&e, Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "foo"));
 }
 
 #[test]
@@ -101,14 +110,21 @@ fn qualified_identifier_is_built_via_postfix_chain() {
     let e = p("foo.bar.baz");
     let mut cur = &e;
     let mut path = vec![];
-    while let Expr::FieldAccess {
-        expr, field_name, ..
+    while let Expr {
+        kind: ExprKind::FieldAccess {
+            expr, field_name, ..
+        },
+        ..
     } = cur
     {
         path.push(field_name.clone());
         cur = expr;
     }
-    if let Expr::Identifier { name, .. } = cur {
+    if let Expr {
+        kind: ExprKind::Identifier { name, .. },
+        ..
+    } = cur
+    {
         assert_eq!(name, "foo");
     } else {
         panic!("expected leaf Identifier, got {cur:?}");
@@ -122,9 +138,17 @@ fn qualified_identifier_is_built_via_postfix_chain() {
 #[test]
 fn additive_vs_multiplicative() {
     let e = p("1 + 2 * 3");
-    if let Expr::BinaryOp { op, right, .. } = &e {
+    if let Expr {
+        kind: ExprKind::BinaryOp { op, right, .. },
+        ..
+    } = &e
+    {
         assert_eq!(*op, BinaryOperator::Add);
-        if let Expr::BinaryOp { op: inner_op, .. } = right.as_ref() {
+        if let Expr {
+            kind: ExprKind::BinaryOp { op: inner_op, .. },
+            ..
+        } = right.as_ref()
+        {
             assert_eq!(*inner_op, BinaryOperator::Mul);
         } else {
             panic!("expected inner Mul, got {right:?}");
@@ -138,13 +162,22 @@ fn additive_vs_multiplicative() {
 #[test]
 fn comparison_vs_equality() {
     let e = p("a == b < c");
-    if let Expr::BinaryOp {
-        op, left, right, ..
+    if let Expr {
+        kind: ExprKind::BinaryOp {
+            op, left, right, ..
+        },
+        ..
     } = &e
     {
         assert_eq!(*op, BinaryOperator::Eq);
-        assert!(matches!(left.as_ref(), Expr::Identifier { name, .. } if name == "a"));
-        if let Expr::BinaryOp { op: inner_op, .. } = right.as_ref() {
+        assert!(
+            matches!(left.as_ref(), Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "a")
+        );
+        if let Expr {
+            kind: ExprKind::BinaryOp { op: inner_op, .. },
+            ..
+        } = right.as_ref()
+        {
             assert_eq!(*inner_op, BinaryOperator::Lt);
         } else {
             panic!("expected inner Lt, got {right:?}");
@@ -158,19 +191,29 @@ fn comparison_vs_equality() {
 #[test]
 fn left_associative_addition() {
     let e = p("1 + 2 + 3");
-    if let Expr::BinaryOp {
-        op, left, right, ..
+    if let Expr {
+        kind: ExprKind::BinaryOp {
+            op, left, right, ..
+        },
+        ..
     } = &e
     {
         assert_eq!(*op, BinaryOperator::Add);
         assert!(matches!(
             right.as_ref(),
-            Expr::Literal {
-                value: Literal::Int(3),
+            Expr {
+                kind: ExprKind::Literal {
+                    value: Literal::Int(3),
+                    ..
+                },
                 ..
             }
         ));
-        if let Expr::BinaryOp { op: inner_op, .. } = left.as_ref() {
+        if let Expr {
+            kind: ExprKind::BinaryOp { op: inner_op, .. },
+            ..
+        } = left.as_ref()
+        {
             assert_eq!(*inner_op, BinaryOperator::Add);
         } else {
             panic!("expected inner Add, got {left:?}");
@@ -184,13 +227,24 @@ fn left_associative_addition() {
 #[test]
 fn right_associative_assignment() {
     let e = p("a += b += c");
-    if let Expr::Assign {
-        op, left, right, ..
+    if let Expr {
+        kind: ExprKind::Assign {
+            op, left, right, ..
+        },
+        ..
     } = &e
     {
         assert_eq!(*op, AssignmentOperator::AddAssign);
-        assert!(matches!(left.as_ref(), Expr::Identifier { name, .. } if name == "a"));
-        assert!(matches!(right.as_ref(), Expr::Assign { .. }));
+        assert!(
+            matches!(left.as_ref(), Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "a")
+        );
+        assert!(matches!(
+            right.as_ref(),
+            Expr {
+                kind: ExprKind::Assign { .. },
+                ..
+            }
+        ));
     } else {
         panic!("expected top-level Assign, got {e:?}");
     }
@@ -200,16 +254,24 @@ fn right_associative_assignment() {
 #[test]
 fn unary_minus_binds_tighter_than_addition() {
     let e = p("-a + b");
-    if let Expr::BinaryOp {
-        op, left, right, ..
+    if let Expr {
+        kind: ExprKind::BinaryOp {
+            op, left, right, ..
+        },
+        ..
     } = &e
     {
         assert_eq!(*op, BinaryOperator::Add);
-        assert!(matches!(right.as_ref(), Expr::Identifier { name, .. } if name == "b"));
+        assert!(
+            matches!(right.as_ref(), Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "b")
+        );
         assert!(matches!(
             left.as_ref(),
-            Expr::UnaryOp {
-                op: UnaryOperator::Neg,
+            Expr {
+                kind: ExprKind::UnaryOp {
+                    op: UnaryOperator::Neg,
+                    ..
+                },
                 ..
             }
         ));
@@ -222,9 +284,19 @@ fn unary_minus_binds_tighter_than_addition() {
 #[test]
 fn unary_looser_than_postfix() {
     let e = p("&arr[i]");
-    if let Expr::UnaryOp { op, expr, .. } = &e {
+    if let Expr {
+        kind: ExprKind::UnaryOp { op, expr, .. },
+        ..
+    } = &e
+    {
         assert_eq!(*op, UnaryOperator::AddressOf);
-        assert!(matches!(expr.as_ref(), Expr::Index { .. }));
+        assert!(matches!(
+            expr.as_ref(),
+            Expr {
+                kind: ExprKind::Index { .. },
+                ..
+            }
+        ));
     } else {
         panic!("expected top-level AddressOf, got {e:?}");
     }
@@ -238,12 +310,16 @@ fn chained_field_access() {
     let e = p("a.b.c.d.e");
     let mut depth = 0;
     let mut cur = &e;
-    while let Expr::FieldAccess { expr, .. } = cur {
+    while let Expr {
+        kind: ExprKind::FieldAccess { expr, .. },
+        ..
+    } = cur
+    {
         depth += 1;
         cur = expr;
     }
     assert_eq!(depth, 4, "expected 4 field-access levels");
-    assert!(matches!(cur, Expr::Identifier { name, .. } if name == "a"));
+    assert!(matches!(cur, Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "a"));
 }
 
 /// 100-level field-access chain `a.f0.f1...f99` does not overflow the stack.
@@ -257,7 +333,11 @@ fn stress_deep_postfix_chain() {
     let e = p(&src);
     let mut depth = 0;
     let mut cur = &e;
-    while let Expr::FieldAccess { expr, .. } = cur {
+    while let Expr {
+        kind: ExprKind::FieldAccess { expr, .. },
+        ..
+    } = cur
+    {
         depth += 1;
         cur = expr;
     }
@@ -278,8 +358,11 @@ fn stress_deep_nested_parens() {
     let e = p(&src);
     assert!(matches!(
         e,
-        Expr::Literal {
-            value: Literal::Int(1),
+        Expr {
+            kind: ExprKind::Literal {
+                value: Literal::Int(1),
+                ..
+            },
             ..
         }
     ));
@@ -291,7 +374,11 @@ fn stress_deep_nested_parens() {
 #[test]
 fn call_no_args() {
     let e = p("f()");
-    if let Expr::Call { callee, args, .. } = &e {
+    if let Expr {
+        kind: ExprKind::Call { callee, args, .. },
+        ..
+    } = &e
+    {
         assert_eq!(callee_name(callee), Some("f".to_string()));
         assert!(args.is_empty());
     } else {
@@ -303,7 +390,11 @@ fn call_no_args() {
 #[test]
 fn call_one_arg() {
     let e = p("f(1)");
-    if let Expr::Call { callee, args, .. } = &e {
+    if let Expr {
+        kind: ExprKind::Call { callee, args, .. },
+        ..
+    } = &e
+    {
         assert_eq!(callee_name(callee), Some("f".to_string()));
         assert_eq!(args.len(), 1);
     } else {
@@ -315,7 +406,11 @@ fn call_one_arg() {
 #[test]
 fn call_many_args() {
     let e = p("f(1, 2, 3, 4, 5)");
-    if let Expr::Call { args, .. } = &e {
+    if let Expr {
+        kind: ExprKind::Call { args, .. },
+        ..
+    } = &e
+    {
         assert_eq!(args.len(), 5);
     } else {
         panic!("expected Call, got {e:?}");
@@ -326,7 +421,11 @@ fn call_many_args() {
 #[test]
 fn call_qualified_name() {
     let e = p("pkg.math.add(2, 3)");
-    if let Expr::Call { callee, args, .. } = &e {
+    if let Expr {
+        kind: ExprKind::Call { callee, args, .. },
+        ..
+    } = &e
+    {
         assert_eq!(callee_name(callee), Some("pkg.math.add".to_string()));
         assert_eq!(args.len(), 2);
     } else {
@@ -338,7 +437,11 @@ fn call_qualified_name() {
 #[test]
 fn call_with_nested_expressions_in_args() {
     let e = p("f(g(1), h(2, 3))");
-    if let Expr::Call { args, .. } = &e {
+    if let Expr {
+        kind: ExprKind::Call { args, .. },
+        ..
+    } = &e
+    {
         assert_eq!(args.len(), 2);
     } else {
         panic!("expected Call, got {e:?}");
@@ -351,12 +454,21 @@ fn call_with_nested_expressions_in_args() {
 #[test]
 fn index() {
     let e = p("arr[0]");
-    if let Expr::Index { expr, index, .. } = &e {
-        assert!(matches!(expr.as_ref(), Expr::Identifier { name, .. } if name == "arr"));
+    if let Expr {
+        kind: ExprKind::Index { expr, index, .. },
+        ..
+    } = &e
+    {
+        assert!(
+            matches!(expr.as_ref(), Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "arr")
+        );
         assert!(matches!(
             index.as_ref(),
-            Expr::Literal {
-                value: Literal::Int(0),
+            Expr {
+                kind: ExprKind::Literal {
+                    value: Literal::Int(0),
+                    ..
+                },
                 ..
             }
         ));
@@ -371,7 +483,11 @@ fn chained_index() {
     let e = p("a[i][j]");
     let mut depth = 0;
     let mut cur = &e;
-    while let Expr::Index { expr, .. } = cur {
+    while let Expr {
+        kind: ExprKind::Index { expr, .. },
+        ..
+    } = cur
+    {
         depth += 1;
         cur = expr;
     }
@@ -384,7 +500,11 @@ fn chained_index() {
 #[test]
 fn empty_array() {
     let e = p("[]");
-    if let Expr::ArrayLiteral { elements, .. } = &e {
+    if let Expr {
+        kind: ExprKind::ArrayLiteral { elements, .. },
+        ..
+    } = &e
+    {
         assert!(elements.is_empty());
     } else {
         panic!("expected ArrayLiteral, got {e:?}");
@@ -395,7 +515,11 @@ fn empty_array() {
 #[test]
 fn array_with_elements() {
     let e = p("[1, 2, 3]");
-    if let Expr::ArrayLiteral { elements, .. } = &e {
+    if let Expr {
+        kind: ExprKind::ArrayLiteral { elements, .. },
+        ..
+    } = &e
+    {
         assert_eq!(elements.len(), 3);
     } else {
         panic!("expected ArrayLiteral, got {e:?}");
@@ -408,7 +532,11 @@ fn array_with_elements() {
 #[test]
 fn struct_init() {
     let e = p("struct Point { x: 10, y: 20 }");
-    if let Expr::StructInit { fields, .. } = &e {
+    if let Expr {
+        kind: ExprKind::StructInit { fields, .. },
+        ..
+    } = &e
+    {
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].name, "x");
         assert_eq!(fields[1].name, "y");
@@ -423,16 +551,26 @@ fn struct_init() {
 #[test]
 fn if_expr() {
     let e = p("if a then b else c");
-    if let Expr::If {
-        cond,
-        then_branch,
-        else_branch,
+    if let Expr {
+        kind:
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            },
         ..
     } = &e
     {
-        assert!(matches!(cond.as_ref(), Expr::Identifier { name, .. } if name == "a"));
-        assert!(matches!(then_branch.as_ref(), Expr::Identifier { name, .. } if name == "b"));
-        assert!(matches!(else_branch.as_ref(), Expr::Identifier { name, .. } if name == "c"));
+        assert!(
+            matches!(cond.as_ref(), Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "a")
+        );
+        assert!(
+            matches!(then_branch.as_ref(), Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "b")
+        );
+        assert!(
+            matches!(else_branch.as_ref(), Expr { kind: ExprKind::Identifier { name, .. }, .. } if name == "c")
+        );
     } else {
         panic!("expected If, got {e:?}");
     }
@@ -444,12 +582,19 @@ fn if_expr() {
 #[test]
 fn logical_and_vs_or() {
     let e = p("a || b && c");
-    if let Expr::BinaryOp { op, right, .. } = &e {
+    if let Expr {
+        kind: ExprKind::BinaryOp { op, right, .. },
+        ..
+    } = &e
+    {
         assert_eq!(*op, BinaryOperator::Or);
         assert!(matches!(
             right.as_ref(),
-            Expr::BinaryOp {
-                op: BinaryOperator::And,
+            Expr {
+                kind: ExprKind::BinaryOp {
+                    op: BinaryOperator::And,
+                    ..
+                },
                 ..
             }
         ));
@@ -472,18 +617,28 @@ fn missing_rparen() {
 #[test]
 fn range_literal_simple() {
     let e = p("1...5");
-    if let Expr::RangeLiteral { start, end, .. } = &e {
+    if let Expr {
+        kind: ExprKind::RangeLiteral { start, end, .. },
+        ..
+    } = &e
+    {
         assert!(matches!(
             start.as_ref(),
-            Expr::Literal {
-                value: Literal::Int(1),
+            Expr {
+                kind: ExprKind::Literal {
+                    value: Literal::Int(1),
+                    ..
+                },
                 ..
             }
         ));
         assert!(matches!(
             end.as_ref(),
-            Expr::Literal {
-                value: Literal::Int(5),
+            Expr {
+                kind: ExprKind::Literal {
+                    value: Literal::Int(5),
+                    ..
+                },
                 ..
             }
         ));
@@ -496,18 +651,28 @@ fn range_literal_simple() {
 #[test]
 fn range_literal_with_expressions() {
     let e = p("a + 1...b - 1");
-    if let Expr::RangeLiteral { start, end, .. } = &e {
+    if let Expr {
+        kind: ExprKind::RangeLiteral { start, end, .. },
+        ..
+    } = &e
+    {
         assert!(matches!(
             start.as_ref(),
-            Expr::BinaryOp {
-                op: BinaryOperator::Add,
+            Expr {
+                kind: ExprKind::BinaryOp {
+                    op: BinaryOperator::Add,
+                    ..
+                },
                 ..
             }
         ));
         assert!(matches!(
             end.as_ref(),
-            Expr::BinaryOp {
-                op: BinaryOperator::Sub,
+            Expr {
+                kind: ExprKind::BinaryOp {
+                    op: BinaryOperator::Sub,
+                    ..
+                },
                 ..
             }
         ));
@@ -557,7 +722,8 @@ fn unrecognized_characters_produce_error() {
 /// Literal exceeding i64 range produces overflow error.
 #[test]
 fn integer_overflow_is_detected() {
-    let err = parse_kit_expr("99999999999999999999", "99999999999999999999", 0).expect_err("should error on overflow literal");
+    let err = parse_kit_expr("99999999999999999999", "99999999999999999999", 0)
+        .expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -568,8 +734,8 @@ fn integer_overflow_is_detected() {
 /// Overflow in left operand of binary expression.
 #[test]
 fn integer_overflow_as_left_operand_is_detected() {
-    let err =
-        parse_kit_expr("99999999999999999999 + 1", "99999999999999999999 + 1", 0).expect_err("should error on overflow literal");
+    let err = parse_kit_expr("99999999999999999999 + 1", "99999999999999999999 + 1", 0)
+        .expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -580,8 +746,8 @@ fn integer_overflow_as_left_operand_is_detected() {
 /// Overflow in right operand of binary expression.
 #[test]
 fn integer_overflow_as_right_operand_is_detected() {
-    let err =
-        parse_kit_expr("1 + 99999999999999999999", "1 + 99999999999999999999", 0).expect_err("should error on overflow literal");
+    let err = parse_kit_expr("1 + 99999999999999999999", "1 + 99999999999999999999", 0)
+        .expect_err("should error on overflow literal");
     let msg = err.to_human_message();
     assert!(
         msg.contains("out of range"),
@@ -599,7 +765,8 @@ fn eof_uses_unexpected_eof_not_semi() {
         "expected 'end of expression', got: {msg}"
     );
     // Also verify the existing test still works:
-    let missing_rparen = parse_kit_expr("(1 + 2", "(1 + 2", 0).expect_err("should error on missing )");
+    let missing_rparen =
+        parse_kit_expr("(1 + 2", "(1 + 2", 0).expect_err("should error on missing )");
     assert!(missing_rparen.to_human_message().contains("`)`"));
 }
 
@@ -608,12 +775,19 @@ fn eof_uses_unexpected_eof_not_semi() {
 fn indirect_call_is_parsed() {
     let e = p("f()()");
     match &e {
-        Expr::Call { callee, args, .. } => {
+        Expr {
+            kind: ExprKind::Call { callee, args, .. },
+            ..
+        } => {
             assert!(args.is_empty(), "outer call should have no args");
             match callee.as_ref() {
-                Expr::Call {
-                    callee: inner,
-                    args: inner_args,
+                Expr {
+                    kind:
+                        ExprKind::Call {
+                            callee: inner,
+                            args: inner_args,
+                            ..
+                        },
                     ..
                 } => {
                     assert_eq!(callee_name(inner), Some("f".to_string()));

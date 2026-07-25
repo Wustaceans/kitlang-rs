@@ -1,5 +1,5 @@
 use super::CodegenCtx;
-use crate::codegen::ast::{Expr, Literal, MatchArm, MatchStmt};
+use crate::codegen::ast::{Expr, ExprKind, Literal, MatchArm, MatchStmt};
 use crate::codegen::name_mangling::mangle_enum_variant;
 use crate::codegen::types::TypeId;
 
@@ -48,7 +48,10 @@ impl CodegenCtx<'_> {
         {
             let is_wildcard = matches!(
                 &arm.pattern,
-                Expr::Identifier { name, .. } if name == "default" || name == "_"
+                Expr {
+                    kind: ExprKind::Identifier { name, .. },
+                    ..
+                } if name == "default" || name == "_"
             );
             if is_wildcard {
                 if !first {
@@ -96,18 +99,16 @@ impl CodegenCtx<'_> {
         matched_ty: TypeId,
         matched_value: &str,
     ) -> PatternMatch {
-        match pattern {
-            Expr::Identifier { name, .. } if name == "_" || name == "default" => PatternMatch {
+        match &pattern.kind {
+            ExprKind::Identifier { name } if name == "_" || name == "default" => PatternMatch {
                 condition: "1".to_string(),
                 bindings: vec![],
             },
-            Expr::Identifier { name, .. } => {
+            ExprKind::Identifier { name } => {
                 self.decompose_identifier_pattern(name, matched_ty, matched_value)
             }
-            Expr::Call { callee, args, .. } => {
-                if let Expr::Identifier {
-                    name: variant_name, ..
-                } = callee.as_ref()
+            ExprKind::Call { callee, args } => {
+                if let ExprKind::Identifier { name: variant_name } = &callee.kind
                     && let Some(pm) =
                         self.decompose_enum_variant_call_pattern(variant_name, args, matched_value)
                 {
@@ -119,7 +120,7 @@ impl CodegenCtx<'_> {
                     bindings: vec![],
                 }
             }
-            Expr::Literal { value, .. } => {
+            ExprKind::Literal { value } => {
                 let lit_str = value.to_c();
                 let condition = match value {
                     Literal::String(_s) => {
@@ -132,7 +133,7 @@ impl CodegenCtx<'_> {
                     bindings: vec![],
                 }
             }
-            Expr::FieldAccess {
+            ExprKind::FieldAccess {
                 expr, field_name, ..
             } => {
                 let inner_value = format!("{matched_value}.{field_name}");

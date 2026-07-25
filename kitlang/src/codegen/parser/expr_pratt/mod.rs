@@ -32,10 +32,15 @@
 //! The token stream carries byte ranges; the parser uses them internally but does not currently
 //! attach them to AST nodes.
 
-use crate::codegen::ast::Expr;
+// Primary expression parsers.
+mod primary;
+
+use crate::codegen::ast::{Expr, ExprKind};
 use crate::codegen::types::TypeId;
 use crate::error::Span as ErrorSpan;
 use crate::lexer::{LexicalError, SpannedTok, Tok, tokenize};
+
+use core::ops::Range;
 
 use super::binding_power::{
     infix, is_range_op, prefix, tok_to_assign_op, tok_to_binary_op, tok_to_unary_op,
@@ -67,11 +72,26 @@ impl<'a> ExprParser<'a> {
         }
     }
 
-    /// Compute an `ErrorSpan` from a byte range relative to the expression text.
-    fn spanned(&self, start: usize, end: usize) -> Option<ErrorSpan> {
-        let offset = self.base_offset.checked_add(start)?;
-        let length = end.checked_sub(start)?;
-        Some(ErrorSpan::from_offset(self.source_text, offset, length))
+    /// Compute an `ErrorSpan` from a byte range in absolute file offsets.
+    ///
+    /// Callers must pass absolute offsets (NOT relative to the expression text). Use [`token_abs`]
+    /// to convert a lexer token's relative range to absolute offsets before calling this function.
+    fn spanned(&self, start: usize, end: usize) -> ErrorSpan {
+        let length = end - start;
+        ErrorSpan::from_offset(self.source_text, start, length)
+    }
+
+    /// Convert a lexer token's byte range (relative to the expression text) to absolute file
+    /// offsets by adding the expression's `base_offset`.
+    ///
+    /// This is necessary because `Expr.span` stores absolute offsets, but the lexer produces
+    /// offsets relative to the substring before being tokenized. Mixing the two coordinate systems
+    /// causes outof-bounds panics in `Span::from_offset`.
+    fn token_abs(&self, tok_span: &Range<usize>) -> (usize, usize) {
+        (
+            self.base_offset + tok_span.start,
+            self.base_offset + tok_span.end,
+        )
     }
 
     /// Entry point. Parses one complete expression and returns it.
@@ -123,16 +143,17 @@ impl<'a> ExprParser<'a> {
         // so `&arr[i]` = `&(arr[i])` (postfix on `arr` first).
         let mut lhs = if let Some(pfx_bp) = prefix(&self.peek().kind) {
             let op = tok_to_unary_op(&self.peek().kind).unwrap();
-            let prefix_tok_span = self.peek().span.clone();
+            let (pfx_start, _) = self.token_abs(&self.peek().span);
             self.advance();
             let rhs = self.parse_pratt(pfx_bp)?;
-            let rhs_span = rhs.span().map(|s| s.offset + s.length).unwrap_or(prefix_tok_span.end);
-            let start_offset = prefix_tok_span.start;
-            Expr::UnaryOp {
-                op,
-                expr: Box::new(rhs),
+            let rhs_end = rhs.span.offset + rhs.span.length;
+            Expr {
+                kind: ExprKind::UnaryOp {
+                    op,
+                    expr: Box::new(rhs),
+                },
                 ty: TypeId::default(),
-                span: self.spanned(start_offset, rhs_span),
+                span: self.spanned(pfx_start, rhs_end),
             }
         } else {
             self.parse_primary()?
@@ -153,15 +174,17 @@ impl<'a> ExprParser<'a> {
             if tok_to_assign_op(&kind).is_some() {
                 break;
             }
-            let op_tok_span = self.peek().span.clone();
             self.advance();
             if is_range_op(&kind) {
                 let rhs = self.parse_pratt(rbp)?;
-                let lhs_span = lhs.span().map(|s| s.offset).unwrap_or(op_tok_span.start);
-                let rhs_end = rhs.span().map(|s| s.offset + s.length).unwrap_or(op_tok_span.end);
-                lhs = Expr::RangeLiteral {
-                    start: Box::new(lhs),
-                    end: Box::new(rhs),
+                let lhs_span = lhs.span.offset;
+                let rhs_end = rhs.span.offset + rhs.span.length;
+                lhs = Expr {
+                    kind: ExprKind::RangeLiteral {
+                        start: Box::new(lhs),
+                        end: Box::new(rhs),
+                    },
+                    ty: TypeId::default(),
                     span: self.spanned(lhs_span, rhs_end),
                 };
                 continue;
@@ -170,22 +193,24 @@ impl<'a> ExprParser<'a> {
                 ExprParseError::Custom(format!("internal: no binary op for {kind:?}"))
             })?;
             let rhs = self.parse_pratt(rbp)?;
-            let lhs_span = lhs.span().map(|s| s.offset).unwrap_or(op_tok_span.start);
-            let rhs_end = rhs.span().map(|s| s.offset + s.length).unwrap_or(op_tok_span.end);
-            lhs = Expr::BinaryOp {
-                op,
-                left: Box::new(lhs),
-                right: Box::new(rhs),
+            let lhs_span = lhs.span.offset;
+            let rhs_end = rhs.span.offset + rhs.span.length;
+            lhs = Expr {
+                kind: ExprKind::BinaryOp {
+                    op,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                },
                 ty: TypeId::default(),
                 span: self.spanned(lhs_span, rhs_end),
             };
         }
 
         // Assignment (right-associative, lowest precedence).
-        // Right-associativity requires the RHS to be parsed at the same
-        // binding power as the operator's lbp, so `a = b = c` becomes
-        // `a = (b = c)`. We use `lbp` (not `rbp` from the table) since
-        // assignment needs `rbp <= lbp` for the RHS to see the operator.
+        //
+        // Right-associativity requires the RHS to be parsed at the same binding power as the
+        // operator's lbp, so `a = b = c` becomes `a = (b = c)`. We use `lbp` (not `rbp` from the
+        // table since assignment needs `rbp <= lbp` for the RHS to see the operator.
         loop {
             let kind = self.peek().kind.clone();
             let Some(op) = tok_to_assign_op(&kind) else {
@@ -197,15 +222,16 @@ impl<'a> ExprParser<'a> {
             if lbp < min_bp {
                 break;
             }
-            let op_tok_span = self.peek().span.clone();
             self.advance();
             let rhs = self.parse_pratt(lbp)?;
-            let lhs_span = lhs.span().map(|s| s.offset).unwrap_or(op_tok_span.start);
-            let rhs_end = rhs.span().map(|s| s.offset + s.length).unwrap_or(op_tok_span.end);
-            lhs = Expr::Assign {
-                op,
-                left: Box::new(lhs),
-                right: Box::new(rhs),
+            let lhs_span = lhs.span.offset;
+            let rhs_end = rhs.span.offset + rhs.span.length;
+            lhs = Expr {
+                kind: ExprKind::Assign {
+                    op,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                },
                 ty: TypeId::default(),
                 span: self.spanned(lhs_span, rhs_end),
             };
@@ -216,9 +242,8 @@ impl<'a> ExprParser<'a> {
 
     // --- Helpers ---
 
-    /// Consume the current token if it matches `expected`, otherwise
-    /// return an `UnexpectedToken` (or `UnexpectedEof` if at end) error
-    /// with `expected`'s name.
+    /// Consume the current token if it matches `expected`, otherwise return an `UnexpectedToken`
+    /// (or `UnexpectedEof` if at the end) error with `expected`'s name.
     fn expect(&mut self, expected: &Tok) -> Result<(), ExprParseError> {
         if &self.peek().kind == expected {
             self.advance();
@@ -236,8 +261,9 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Parse a comma-separated list of `T` terminated by `closer`.
-    /// Allows zero or more elements (an empty list is valid for fn
-    /// calls with no args, empty array literals, etc.).
+    ///
+    /// Allows zero or more elements (an empty list is valid for fn calls with no args, empty array
+    /// literals, etc.).
     fn parse_comma_list<T, F>(&mut self, closer: Tok, mut f: F) -> Result<Vec<T>, ExprParseError>
     where
         F: FnMut(&mut Self) -> Result<T, ExprParseError>,
@@ -262,16 +288,15 @@ impl<'a> ExprParser<'a> {
     }
 }
 
-/// Extract a string callee name from an expression for name-mangling
-/// and symbol-table lookup. Returns `None` for indirect calls that
-/// must be resolved by the callee's inferred type.
+/// Extract a string callee name from an expression for name-mangling and symbol-table lookup.
+///
+/// Returns `None` for indirect calls that must be resolved by the callee's inferred type.
 pub(crate) fn callee_name(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::Identifier { name, .. } => Some(name.clone()),
-        Expr::FieldAccess {
+    match &expr.kind {
+        ExprKind::Identifier { name } => Some(name.clone()),
+        ExprKind::FieldAccess {
             expr: base,
             field_name,
-            ..
         } => Some(format!("{}.{}", callee_name(base)?, field_name)),
         _ => None,
     }
@@ -323,9 +348,6 @@ pub(crate) fn parse_kit_expr(
 
     Ok(expr)
 }
-
-// Primary expression parsers.
-mod primary;
 
 // Tests (test builds only).
 #[cfg(test)]

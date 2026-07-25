@@ -19,7 +19,8 @@ pub mod type_ast;
 // -- Re-exports --
 
 pub use ast::{
-    Block, Expr, Function, GlobalDecl, Include, Literal, MetaArg, Metadata, Param, Program, Stmt,
+    Block, Expr, ExprKind, Function, GlobalDecl, Include, Literal, MatchArm, MatchStmt, MetaArg,
+    Metadata, Param, Program, Stmt, StmtKind,
 };
 pub use compiler::Toolchain;
 pub use module::{

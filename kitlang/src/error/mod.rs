@@ -28,8 +28,14 @@ impl Span {
     }
 
     /// Build a `Span` from a byte offset into source text.
+    ///
     /// Computes line/column by scanning the source up to the offset.
+    /// Clamps `offset` to the source length so out-of-bounds offsets
+    /// don't panic (e.g. tests construct `TypeInferencer` without
+    /// source text, but the Pratt parser still produces spans with
+    /// real offsets from the file).
     pub fn from_offset(source: &str, offset: usize, length: usize) -> Self {
+        let offset = offset.min(source.len());
         let line = source[..offset].lines().count();
         let column = offset - source[..offset].rfind('\n').map_or(0, |i| i + 1) + 1;
         Self {

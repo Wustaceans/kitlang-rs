@@ -3,7 +3,7 @@
 // These are implementations on `ExprParser` that are split into their own
 // module for readability. The main module (`mod.rs`) declares `mod primary;`.
 
-use crate::codegen::ast::{Expr, Literal};
+use crate::codegen::ast::{Expr, ExprKind, Literal};
 use crate::codegen::type_ast::FieldInit;
 use crate::codegen::types::{Type, TypeId};
 use crate::lexer::Tok;
@@ -40,63 +40,77 @@ impl<'a> ExprParser<'a> {
     /// only needs to produce the base expression.
     pub(crate) fn parse_primary(&mut self) -> Result<Expr, ExprParseError> {
         let tok = self.peek().kind.clone();
-        let tok_span = self.peek().span.clone();
+        let (tok_start, tok_end) = self.token_abs(&self.peek().span);
 
         match tok {
             Tok::IntLit(n) => {
                 self.advance();
-                Ok(Expr::Literal {
-                    value: Literal::Int(n),
+                Ok(Expr {
+                    kind: ExprKind::Literal {
+                        value: Literal::Int(n),
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(tok_span.start, tok_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::FloatLit(f) => {
                 self.advance();
-                Ok(Expr::Literal {
-                    value: Literal::Float(f),
+                Ok(Expr {
+                    kind: ExprKind::Literal {
+                        value: Literal::Float(f),
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(tok_span.start, tok_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::CharLit(c) => {
                 self.advance();
-                Ok(Expr::Literal {
-                    value: Literal::Char(c),
+                Ok(Expr {
+                    kind: ExprKind::Literal {
+                        value: Literal::Char(c),
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(tok_span.start, tok_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::StringLit(s) => {
                 self.advance();
-                Ok(Expr::Literal {
-                    value: Literal::String(s),
+                Ok(Expr {
+                    kind: ExprKind::Literal {
+                        value: Literal::String(s),
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(tok_span.start, tok_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::KwTrue => {
                 self.advance();
-                Ok(Expr::Literal {
-                    value: Literal::Bool(true),
+                Ok(Expr {
+                    kind: ExprKind::Literal {
+                        value: Literal::Bool(true),
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(tok_span.start, tok_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::KwFalse => {
                 self.advance();
-                Ok(Expr::Literal {
-                    value: Literal::Bool(false),
+                Ok(Expr {
+                    kind: ExprKind::Literal {
+                        value: Literal::Bool(false),
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(tok_span.start, tok_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::KwNull => {
                 self.advance();
-                Ok(Expr::Literal {
-                    value: Literal::Null,
+                Ok(Expr {
+                    kind: ExprKind::Literal {
+                        value: Literal::Null,
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(tok_span.start, tok_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::KwThis | Tok::KwSelf => {
@@ -105,19 +119,20 @@ impl<'a> ExprParser<'a> {
                     _ => "Self",
                 };
                 self.advance();
-                Ok(Expr::Identifier {
-                    name: name.to_string(),
+                Ok(Expr {
+                    kind: ExprKind::Identifier {
+                        name: name.to_string(),
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(tok_span.start, tok_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::Ident(name) => {
-                let ident_span = tok_span.clone();
                 self.advance();
-                Ok(Expr::Identifier {
-                    name,
+                Ok(Expr {
+                    kind: ExprKind::Identifier { name },
                     ty: TypeId::default(),
-                    span: self.spanned(ident_span.start, ident_span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             Tok::LParen => {
@@ -136,12 +151,13 @@ impl<'a> ExprParser<'a> {
             Tok::KwStruct => self.parse_struct_init(),
             Tok::KwIf => self.parse_if_expr(),
             Tok::KwEmpty => {
-                let span = tok_span.clone();
                 self.advance();
-                Ok(Expr::Identifier {
-                    name: "empty".to_string(),
+                Ok(Expr {
+                    kind: ExprKind::Identifier {
+                        name: "empty".to_string(),
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(span.start, span.end),
+                    span: self.spanned(tok_start, tok_end),
                 })
             }
             _ => {
@@ -185,19 +201,20 @@ impl<'a> ExprParser<'a> {
 
     /// Parse a `.field` access postfix.
     fn parse_field_access(&mut self, base: Expr) -> Result<Expr, ExprParseError> {
-        let dot_span = self.peek().span.clone();
         self.advance(); // consume `.`
         let field_tok = self.peek().kind.clone();
-        let field_span = self.peek().span.clone();
+        let (_, field_end) = self.token_abs(&self.peek().span);
         match field_tok {
             Tok::Ident(name) => {
-                let start = base.span().map(|s| s.offset).unwrap_or(dot_span.start);
+                let start = base.span.offset;
                 self.advance();
-                Ok(Expr::FieldAccess {
-                    expr: Box::new(base),
-                    field_name: name,
+                Ok(Expr {
+                    kind: ExprKind::FieldAccess {
+                        expr: Box::new(base),
+                        field_name: name,
+                    },
                     ty: TypeId::default(),
-                    span: self.spanned(start, field_span.end),
+                    span: self.spanned(start, field_end),
                 })
             }
             _ => Err(ExprParseError::UnexpectedToken {
@@ -209,15 +226,16 @@ impl<'a> ExprParser<'a> {
 
     /// Parse a `[index]` postfix.
     fn parse_index(&mut self, base: Expr) -> Result<Expr, ExprParseError> {
-        let bracket_span = self.peek().span.clone();
-        let start = base.span().map(|s| s.offset).unwrap_or(bracket_span.start);
+        let start = base.span.offset;
         self.advance(); // consume `[`
         let index = self.parse_expr()?;
-        let end = self.peek().span.end;
+        let (_, end) = self.token_abs(&self.peek().span); // `]`
         self.expect(&Tok::RBracket)?;
-        Ok(Expr::Index {
-            expr: Box::new(base),
-            index: Box::new(index),
+        Ok(Expr {
+            kind: ExprKind::Index {
+                expr: Box::new(base),
+                index: Box::new(index),
+            },
             ty: TypeId::default(),
             span: self.spanned(start, end),
         })
@@ -226,19 +244,21 @@ impl<'a> ExprParser<'a> {
     /// Parse a function call postfix: `(arg1, arg2, ...)`.
     /// The callee is any expression; no rejection of indirect calls.
     fn parse_call(&mut self, callee: Expr) -> Result<Expr, ExprParseError> {
-        let paren_span = self.peek().span.clone();
-        let start = callee.span().map(|s| s.offset).unwrap_or(paren_span.start);
+        let start = callee.span.offset;
+        let paren_end = self.base_offset + self.peek().span.end + 1; // `)` relative to expr text +1
         self.advance(); // consume `(`
         let args = self.parse_comma_list(Tok::RParen, |p| p.parse_expr())?;
         // after parse_comma_list the closing paren has been consumed, so peek is the next token
-        // use the last arg span or the opening paren span as end
+        // use the last arg's end or the computed paren end
         let end = args
             .last()
-            .and_then(|a| a.span().map(|s| s.offset + s.length))
-            .unwrap_or(paren_span.end);
-        Ok(Expr::Call {
-            callee: Box::new(callee),
-            args,
+            .map(|a| a.span.offset + a.span.length)
+            .unwrap_or(paren_end);
+        Ok(Expr {
+            kind: ExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
             ty: TypeId::default(),
             span: self.spanned(start, end),
         })
@@ -246,20 +266,23 @@ impl<'a> ExprParser<'a> {
 
     /// Parse an array literal: `[expr, expr, ...]`.
     fn parse_array_literal(&mut self) -> Result<Expr, ExprParseError> {
-        let start = self.peek().span.start;
+        let (arr_start, arr_end) = self.token_abs(&self.peek().span); // `[`
         self.advance(); // consume `[`
         let elements = self.parse_comma_list(Tok::RBracket, |p| p.parse_expr())?;
-        let end = self.peek().span.end;
-        Ok(Expr::ArrayLiteral {
-            elements,
+        let end = elements
+            .last()
+            .map(|a| a.span.offset + a.span.length)
+            .unwrap_or(arr_end);
+        Ok(Expr {
+            kind: ExprKind::ArrayLiteral { elements },
             ty: TypeId::default(),
-            span: self.spanned(start, end),
+            span: self.spanned(arr_start, end),
         })
     }
 
     /// Parse a struct init: `struct Name { field: expr, ... }`.
     fn parse_struct_init(&mut self) -> Result<Expr, ExprParseError> {
-        let start = self.peek().span.start;
+        let start = self.base_offset + self.peek().span.start;
         self.advance(); // consume `struct`
         let type_tok = self.peek().kind.clone();
         let type_name = match type_tok {
@@ -293,32 +316,36 @@ impl<'a> ExprParser<'a> {
             let value = p.parse_expr()?;
             Ok(FieldInit { name, value })
         })?;
-        let end = self.peek().span.end;
-        Ok(Expr::StructInit {
+        let end = fields
+            .last()
+            .map(|f| f.value.span.offset + f.value.span.length)
+            .unwrap_or(start + 6);
+        Ok(Expr {
+            kind: ExprKind::StructInit {
+                struct_type: Some(Type::from_kit(&type_name)),
+                fields,
+            },
             ty: TypeId::default(),
-            struct_type: Some(Type::from_kit(&type_name)),
-            fields,
             span: self.spanned(start, end),
         })
     }
 
     /// Parse an if-expression: `if cond then a else b`.
     fn parse_if_expr(&mut self) -> Result<Expr, ExprParseError> {
-        let start = self.peek().span.start;
+        let start = self.base_offset + self.peek().span.start;
         self.advance(); // consume `if`
         let cond = self.parse_expr()?;
         self.expect(&Tok::KwThen)?;
         let then_branch = self.parse_expr()?;
         self.expect(&Tok::KwElse)?;
         let else_branch = self.parse_expr()?;
-        let end = else_branch
-            .span()
-            .map(|s| s.offset + s.length)
-            .unwrap_or(start + 2);
-        Ok(Expr::If {
-            cond: Box::new(cond),
-            then_branch: Box::new(then_branch),
-            else_branch: Box::new(else_branch),
+        let end = else_branch.span.offset + else_branch.span.length;
+        Ok(Expr {
+            kind: ExprKind::If {
+                cond: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
             ty: TypeId::default(),
             span: self.spanned(start, end),
         })

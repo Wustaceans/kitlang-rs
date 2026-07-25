@@ -332,7 +332,7 @@ impl TypeStore {
     }
 
     /// Check if a Type is a numeric type (integer or floating-point).
-    fn is_numeric(ty: &Type) -> bool {
+    const fn is_numeric(ty: &Type) -> bool {
         matches!(
             ty,
             Type::Int8

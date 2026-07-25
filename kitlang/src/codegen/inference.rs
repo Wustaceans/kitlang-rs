@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use super::ast::{Block, Expr, Function, GlobalDecl, Literal, MatchStmt, Program, Stmt};
+use super::ast::{
+    Block, Expr, ExprKind, Function, GlobalDecl, Literal, MatchStmt, Program, Stmt, StmtKind,
+};
 use super::symbols::{EnumVariantInfo, SymbolTable};
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
 use super::types::{BinaryOperator, Type, TypeId, TypeStore, UnaryOperator};
@@ -8,27 +10,6 @@ use super::{Field, TypeDef};
 use crate::codegen::parser::expr_pratt::callee_name;
 use crate::error::{CompilationError, CompileResult, ErrorContext, Span};
 use crate::type_err;
-
-/// Set the `ty` field on any expression that has one (all except RangeLiteral).
-fn set_expr_type(expr: &mut Expr, ty: TypeId) -> &mut Expr {
-    match expr {
-        Expr::Identifier { ty: t, .. }
-        | Expr::Literal { ty: t, .. }
-        | Expr::Call { ty: t, .. }
-        | Expr::UnaryOp { ty: t, .. }
-        | Expr::BinaryOp { ty: t, .. }
-        | Expr::Assign { ty: t, .. }
-        | Expr::If { ty: t, .. }
-        | Expr::StructInit { ty: t, .. }
-        | Expr::FieldAccess { ty: t, .. }
-        | Expr::EnumVariant { ty: t, .. }
-        | Expr::EnumInit { ty: t, .. }
-        | Expr::ArrayLiteral { ty: t, .. }
-        | Expr::Index { ty: t, .. } => *t = ty,
-        Expr::RangeLiteral { .. } => {}
-    }
-    expr
-}
 
 /// Type inference engine using Hindley-Milner algorithm.
 #[derive(Default)]
@@ -67,7 +48,11 @@ impl TypeInferencer {
     /// Wrap a result with source context from an expression's span, if available.
     fn wrap_err<T>(&self, result: CompileResult<T>, span: Option<&Span>) -> CompileResult<T> {
         result.map_err(|e| {
-            if let Some(span) = span {
+            // Only attach context when we have both a span and real source text.
+            // Tests create TypeInferencer without source, so skip in that case.
+            if let Some(span) = span
+                && !self.source_text.is_empty()
+            {
                 e.with_context(ErrorContext {
                     file: self.source_file.clone(),
                     source: self.source_text.clone(),
@@ -111,7 +96,7 @@ impl TypeInferencer {
                 global.inferred = if let Some(ann) = &global.annotation {
                     let ann_ty = self.store.new_known(ann.clone());
                     self.unify(ann_ty, init_ty)?;
-                    set_expr_type(init_expr, ann_ty);
+                    init_expr.ty = ann_ty;
                     ann_ty
                 } else {
                     init_ty
@@ -284,26 +269,18 @@ impl TypeInferencer {
 
     /// Infer types for a single statement
     fn infer_stmt(&mut self, stmt: &mut Stmt) -> CompileResult<()> {
-        let span = match stmt {
-            Stmt::VarDecl { span, .. } => span.clone(),
-            Stmt::If { span, .. } => span.clone(),
-            Stmt::While { span, .. } => span.clone(),
-            Stmt::For { span, .. } => span.clone(),
-            Stmt::Match(m) => m.span.clone(),
-            _ => None,
-        };
+        let span = stmt.span.clone();
         let result = self.infer_stmt_inner(stmt);
-        self.wrap_err(result, span.as_ref())
+        self.wrap_err(result, Some(&span))
     }
 
     fn infer_stmt_inner(&mut self, stmt: &mut Stmt) -> CompileResult<()> {
-        match stmt {
-            Stmt::VarDecl {
+        match &mut stmt.kind {
+            StmtKind::VarDecl {
                 name,
                 annotation,
                 inferred,
                 init,
-                ..
             } => {
                 if let Some(init_expr) = init {
                     let init_ty = self.infer_expr(init_expr)?;
@@ -311,7 +288,7 @@ impl TypeInferencer {
                     *inferred = if let Some(ann) = annotation {
                         let ann_ty = self.store.new_known(ann.clone());
                         self.unify(ann_ty, init_ty)?;
-                        set_expr_type(init_expr, ann_ty);
+                        init_expr.ty = ann_ty;
                         ann_ty
                     } else {
                         init_ty
@@ -329,22 +306,22 @@ impl TypeInferencer {
                 }
             }
 
-            Stmt::Expr(expr) => {
+            StmtKind::Expr(expr) => {
                 self.infer_expr(expr)?;
             }
 
-            Stmt::Return(Some(expr)) => {
+            StmtKind::Return(Some(expr)) => {
                 let expr_ty = self.infer_expr(expr)?;
                 if let Some(ret_ty) = self.current_return_type {
                     self.unify(ret_ty, expr_ty)?;
-                    set_expr_type(expr, ret_ty);
+                    expr.ty = ret_ty;
                 } else {
                     return Err(type_err!("Return statement outside of function"));
                 }
             }
 
             // Void return - check if function expects void
-            Stmt::Return(None) => {
+            StmtKind::Return(None) => {
                 if let Some(ret_ty) = self.current_return_type {
                     let void_ty = self.store.new_known(Type::Void);
                     self.unify(ret_ty, void_ty)?;
@@ -353,11 +330,10 @@ impl TypeInferencer {
                 }
             }
 
-            Stmt::If {
+            StmtKind::If {
                 cond,
                 then_branch,
                 else_branch,
-                ..
             } => {
                 let cond_ty = self.infer_expr(cond)?;
                 let bool_ty = self.store.new_known(Type::Bool);
@@ -369,7 +345,7 @@ impl TypeInferencer {
                 }
             }
 
-            Stmt::While { cond, body, .. } => {
+            StmtKind::While { cond, body } => {
                 let cond_ty = self.infer_expr(cond)?;
                 let bool_ty = self.store.new_known(Type::Bool);
                 self.unify(cond_ty, bool_ty)?;
@@ -377,7 +353,7 @@ impl TypeInferencer {
                 self.infer_block(body)?;
             }
 
-            Stmt::For { var, iter, body, .. } => {
+            StmtKind::For { var, iter, body } => {
                 let iter_ty = self.infer_expr(iter)?;
 
                 // NOTE: RangeLiteral is typed as Void (see infer_range_literal),
@@ -401,11 +377,11 @@ impl TypeInferencer {
                 self.infer_block(body)?;
             }
 
-            Stmt::Match(m) => {
+            StmtKind::Match(m) => {
                 self.infer_match_stmt(m)?;
             }
 
-            Stmt::Break | Stmt::Continue => {
+            StmtKind::Break | StmtKind::Continue => {
                 // No type inference needed
             }
         }
@@ -418,7 +394,10 @@ impl TypeInferencer {
         for arm in &mut m.arms {
             let is_default = matches!(
                 &arm.pattern,
-                Expr::Identifier { name, .. } if name == "default" || name == "_"
+                Expr {
+                    kind: ExprKind::Identifier { name, .. },
+                    ..
+                } if name == "default" || name == "_"
             );
             self.symbols.push_scope();
             if !is_default {
@@ -436,30 +415,28 @@ impl TypeInferencer {
     /// enum constructor patterns like `SomeInt(x)` by looking up the variant
     /// and treating identifier arguments as bindings rather than references.
     fn infer_pattern(&mut self, pattern: &mut Expr) -> CompileResult<TypeId> {
-        match pattern {
-            Expr::Identifier { name, ty, .. } if name == "_" || name == "default" => {
+        match &mut pattern.kind {
+            ExprKind::Identifier { name } if name == "_" || name == "default" => {
                 let fresh = self.store.new_unknown();
-                *ty = fresh;
+                pattern.ty = fresh;
                 Ok(fresh)
             }
-            Expr::Identifier { ty, .. } => {
+            ExprKind::Identifier { .. } => {
                 // Binding pattern: create an unknown type for the AST node
                 let fresh = self.store.new_unknown();
-                *ty = fresh;
+                pattern.ty = fresh;
                 Ok(fresh)
             }
-            Expr::Call { callee, args, ty, .. } => {
+            ExprKind::Call { callee, args } => {
                 // Enum constructor pattern: `SomeVal(v)` or `SomeVal(1)`
-                if let Expr::Identifier {
-                    name: variant_name, ..
-                } = callee.as_ref()
+                if let ExprKind::Identifier { name: variant_name } = &callee.kind
                     && let Some(info) = self
                         .symbols
                         .lookup_enum_variant_by_simple_name(variant_name)
                         .cloned()
                 {
                     let enum_ty = self.store.new_known(Type::Named(info.enum_name.clone()));
-                    *ty = enum_ty;
+                    pattern.ty = enum_ty;
                     let arg_types = info.arg_types.clone();
                     for (arg, &expected_ty) in args.iter_mut().zip(arg_types.iter()) {
                         let arg_ty = self.infer_pattern(arg)?;
@@ -469,7 +446,7 @@ impl TypeInferencer {
                 }
                 self.infer_expr(pattern)
             }
-            other => self.infer_expr(other),
+            _ => self.infer_expr(pattern),
         }
     }
 
@@ -481,16 +458,14 @@ impl TypeInferencer {
         pattern: &Expr,
         matched_ty: TypeId,
     ) -> CompileResult<()> {
-        match pattern {
-            Expr::Identifier { name, .. } if name == "_" || name == "default" => Ok(()),
-            Expr::Identifier { name, .. } => {
+        match &pattern.kind {
+            ExprKind::Identifier { name } if name == "_" || name == "default" => Ok(()),
+            ExprKind::Identifier { name } => {
                 self.symbols.define_var(name, matched_ty);
                 Ok(())
             }
-            Expr::Call { callee, args, .. } => {
-                if let Expr::Identifier {
-                    name: variant_name, ..
-                } = callee.as_ref()
+            ExprKind::Call { callee, args } => {
+                if let ExprKind::Identifier { name: variant_name } = &callee.kind
                     && let Some(expected_types) = self
                         .symbols
                         .lookup_enum_variant_by_simple_name(variant_name)
@@ -514,50 +489,50 @@ impl TypeInferencer {
                 }
                 Ok(())
             }
-            Expr::Literal { .. } => Ok(()),
-            Expr::StructInit { fields, .. } => {
+            ExprKind::Literal { .. } => Ok(()),
+            ExprKind::StructInit { fields, .. } => {
                 for field in fields {
                     self.extract_pattern_bindings(&field.value, matched_ty)?;
                 }
                 Ok(())
             }
-            Expr::FieldAccess { expr, .. } => self.extract_pattern_bindings(expr, matched_ty),
+            ExprKind::FieldAccess { expr, .. } => self.extract_pattern_bindings(expr, matched_ty),
             _ => Ok(()),
         }
     }
 
     /// Infer types for an expression
     fn infer_expr(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let span = expr.span().cloned();
+        let span = expr.span.clone();
         let result = self.infer_expr_inner(expr);
-        self.wrap_err(result, span.as_ref())
+        self.wrap_err(result, Some(&span))
     }
 
     fn infer_expr_inner(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        Ok(match expr {
-            Expr::Identifier { .. } => self.infer_identifier(expr)?,
-            Expr::Literal { .. } => self.infer_literal(expr)?,
-            Expr::Call { .. } if self.is_call_enum_constructor(expr) => {
+        Ok(match &expr.kind {
+            ExprKind::Identifier { .. } => self.infer_identifier(expr)?,
+            ExprKind::Literal { .. } => self.infer_literal(expr)?,
+            ExprKind::Call { .. } if self.is_call_enum_constructor(expr) => {
                 self.infer_enum_constructor_call(expr)?
             }
-            Expr::Call { .. } => self.infer_function_call(expr)?,
-            Expr::UnaryOp { .. } => self.infer_unary_op(expr)?,
-            Expr::BinaryOp { .. } => self.infer_binary_op(expr)?,
-            Expr::Assign { .. } => self.infer_assign(expr)?,
-            Expr::If { .. } => self.infer_if_expr(expr)?,
-            Expr::RangeLiteral { .. } => self.infer_range_literal(expr)?,
-            Expr::StructInit { .. } => self.infer_struct_init(expr)?,
-            Expr::FieldAccess { .. } => self.infer_field_access(expr)?,
-            Expr::EnumVariant { .. } => self.infer_enum_variant(expr)?,
-            Expr::EnumInit { .. } => self.infer_enum_init(expr)?,
-            Expr::ArrayLiteral { .. } => self.infer_array_literal(expr)?,
-            Expr::Index { .. } => self.infer_index(expr)?,
+            ExprKind::Call { .. } => self.infer_function_call(expr)?,
+            ExprKind::UnaryOp { .. } => self.infer_unary_op(expr)?,
+            ExprKind::BinaryOp { .. } => self.infer_binary_op(expr)?,
+            ExprKind::Assign { .. } => self.infer_assign(expr)?,
+            ExprKind::If { .. } => self.infer_if_expr(expr)?,
+            ExprKind::RangeLiteral { .. } => self.infer_range_literal(expr)?,
+            ExprKind::StructInit { .. } => self.infer_struct_init(expr)?,
+            ExprKind::FieldAccess { .. } => self.infer_field_access(expr)?,
+            ExprKind::EnumVariant { .. } => self.infer_enum_variant(expr)?,
+            ExprKind::EnumInit { .. } => self.infer_enum_init(expr)?,
+            ExprKind::ArrayLiteral { .. } => self.infer_array_literal(expr)?,
+            ExprKind::Index { .. } => self.infer_index(expr)?,
         })
     }
 
     fn is_call_enum_constructor(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::Call { callee, .. } => callee_name(callee).is_some_and(|name| {
+        match &expr.kind {
+            ExprKind::Call { callee, .. } => callee_name(callee).is_some_and(|name| {
                 self.symbols
                     .lookup_enum_variant_by_simple_name(&name)
                     .is_some()
@@ -567,26 +542,27 @@ impl TypeInferencer {
     }
 
     fn infer_identifier(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::Identifier { name, ty: ty_id, span } = expr else {
-            unreachable!("infer_identifier called on non-Identifier");
+        let name = match &expr.kind {
+            ExprKind::Identifier { name } => name.clone(),
+            _ => unreachable!("infer_identifier called on non-Identifier"),
         };
-        if let Some(global_ty) = self.symbols.lookup_global(name) {
-            *ty_id = global_ty;
+        if let Some(global_ty) = self.symbols.lookup_global(&name) {
+            expr.ty = global_ty;
             Ok(global_ty)
-        } else if let Some(var_ty) = self.symbols.lookup_var(name) {
-            *ty_id = var_ty;
+        } else if let Some(var_ty) = self.symbols.lookup_var(&name) {
+            expr.ty = var_ty;
             Ok(var_ty)
-        } else if let Some(variant_info) = self.symbols.lookup_enum_variant(name) {
+        } else if let Some(variant_info) = self.symbols.lookup_enum_variant(&name) {
             let enum_ty = self
                 .store
                 .new_known(Type::Named(variant_info.enum_name.clone()));
-            *ty_id = enum_ty;
-            *expr = Expr::EnumVariant {
+            let span = expr.span.clone();
+            expr.ty = enum_ty;
+            expr.kind = ExprKind::EnumVariant {
                 enum_name: variant_info.enum_name.clone(),
                 variant_name: variant_info.variant_name.clone(),
-                ty: enum_ty,
-                span: span.clone(),
             };
+            expr.span = span;
             Ok(enum_ty)
         } else {
             // NOTE: fallback - enumerates ALL enums to resolve bare variant names (e.g. `Red`)
@@ -594,7 +570,7 @@ impl TypeInferencer {
             let mut found = None;
             for enum_def in self.symbols.get_enums() {
                 for variant in &enum_def.variants {
-                    if variant.name == *name {
+                    if variant.name == name {
                         found = Some(enum_def.name.clone());
                         break;
                     }
@@ -605,13 +581,13 @@ impl TypeInferencer {
             }
             if let Some(enum_name) = found {
                 let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
-                *ty_id = enum_ty;
-                *expr = Expr::EnumVariant {
+                let span = expr.span.clone();
+                expr.ty = enum_ty;
+                expr.kind = ExprKind::EnumVariant {
                     enum_name: enum_name.clone(),
                     variant_name: name.clone(),
-                    ty: enum_ty,
-                    span: span.clone(),
                 };
+                expr.span = span;
                 Ok(enum_ty)
             } else {
                 Err(type_err!(
@@ -622,13 +598,9 @@ impl TypeInferencer {
     }
 
     fn infer_literal(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::Literal {
-            value: lit,
-            ty: ty_id,
-            ..
-        } = expr
-        else {
-            unreachable!("infer_literal called on non-Literal");
+        let lit = match &expr.kind {
+            ExprKind::Literal { value } => value.clone(),
+            _ => unreachable!("infer_literal called on non-Literal"),
         };
         let ty = match lit {
             Literal::Int(_) => Type::Int,
@@ -639,12 +611,12 @@ impl TypeInferencer {
             Literal::Null => Type::Ptr(Box::new(Type::Void)),
         };
         let type_id = self.store.new_known(ty);
-        *ty_id = type_id;
+        expr.ty = type_id;
         Ok(type_id)
     }
 
     fn infer_enum_constructor_call(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::Call { callee, args, ty, .. } = expr else {
+        let ExprKind::Call { callee, args } = &mut expr.kind else {
             unreachable!("infer_enum_constructor_call called on non-Call");
         };
         let callee_str = callee_name(callee).expect("guard ensures this is valid");
@@ -676,15 +648,15 @@ impl TypeInferencer {
         for (arg, expected_ty) in resolved_args.iter_mut().zip(expected_types.iter()) {
             let arg_ty = self.infer_expr(arg)?;
             self.unify(arg_ty, *expected_ty)?;
-            set_expr_type(arg, *expected_ty);
+            arg.ty = *expected_ty;
         }
         *args = resolved_args;
-        *ty = enum_ty;
+        expr.ty = enum_ty;
         Ok(enum_ty)
     }
 
     fn infer_function_call(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::Call { callee, args, ty, .. } = expr else {
+        let ExprKind::Call { callee, args } = &mut expr.kind else {
             unreachable!("infer_function_call called on non-Call");
         };
 
@@ -692,7 +664,7 @@ impl TypeInferencer {
         if let Some(name) = callee_name(callee)
             && let Some((param_tys, ret_ty)) = self.symbols.lookup_function(&name)
         {
-            return self.infer_call_with_sig(&name, param_tys, ret_ty, args, ty);
+            return self.infer_call_with_sig(&name, param_tys, ret_ty, args, &mut expr.ty);
         }
 
         // Indirect call: infer callee type and check callability.
@@ -725,7 +697,7 @@ impl TypeInferencer {
                             self.unify(arg_ty, param_ty_id)?;
                         }
                         let ret_ty_id = self.store.new_known((*ret_ty).clone());
-                        *ty = ret_ty_id;
+                        expr.ty = ret_ty_id;
                         return Ok(ret_ty_id);
                     }
                     // Resolved to a non-callable type.
@@ -743,9 +715,10 @@ impl TypeInferencer {
             }
         }
 
-        // C interop: only for names absent from the symbol table.
-        // Use a fresh type variable as the return type so it can be unified with the actual type
-        // from context (e.g., Bool for while conditions).
+        // The callee name is absent from the symbol table, so treat it as an external C function.
+        //
+        // Use a fresh type variable for the return type so it unifies with whatever the context
+        // expects.
         if let Some(name) = callee_name(callee)
             && self.symbols.lookup_function(&name).is_none()
             && self.symbols.lookup_global(&name).is_none()
@@ -754,7 +727,7 @@ impl TypeInferencer {
             for arg in args.iter_mut() {
                 self.infer_expr(arg)?;
             }
-            *ty = ret_ty;
+            expr.ty = ret_ty;
             return Ok(ret_ty);
         }
 
@@ -794,7 +767,7 @@ impl TypeInferencer {
             for (arg, param_ty) in args.iter_mut().zip(param_tys.iter()) {
                 let arg_ty = self.infer_expr(arg)?;
                 self.unify(arg_ty, *param_ty)?;
-                set_expr_type(arg, *param_ty);
+                arg.ty = *param_ty;
             }
         }
 
@@ -803,13 +776,7 @@ impl TypeInferencer {
     }
 
     fn infer_unary_op(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::UnaryOp {
-            op,
-            expr: inner,
-            ty,
-            ..
-        } = expr
-        else {
+        let ExprKind::UnaryOp { op, expr: inner } = &mut expr.kind else {
             unreachable!("infer_unary_op called on non-UnaryOp");
         };
         let expr_ty = self.infer_expr(inner)?;
@@ -831,19 +798,12 @@ impl TypeInferencer {
             _ => expr_ty,
         };
 
-        *ty = result_ty;
+        expr.ty = result_ty;
         Ok(result_ty)
     }
 
     fn infer_binary_op(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::BinaryOp {
-            op,
-            left,
-            right,
-            ty,
-            ..
-        } = expr
-        else {
+        let ExprKind::BinaryOp { op, left, right } = &mut expr.kind else {
             unreachable!("infer_binary_op called on non-BinaryOp");
         };
         let left_ty = self.infer_expr(left)?;
@@ -871,19 +831,12 @@ impl TypeInferencer {
             }
         };
 
-        *ty = result_ty;
+        expr.ty = result_ty;
         Ok(result_ty)
     }
 
     fn infer_assign(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::Assign {
-            op: _,
-            left,
-            right,
-            ty,
-            ..
-        } = expr
-        else {
+        let ExprKind::Assign { op: _, left, right } = &mut expr.kind else {
             unreachable!("infer_assign called on non-Assign");
         };
         let right_ty = self.infer_expr(right)?;
@@ -891,18 +844,16 @@ impl TypeInferencer {
 
         self.unify(left_ty, right_ty)?;
 
-        *ty = left_ty;
+        expr.ty = left_ty;
         Ok(left_ty)
     }
 
     fn infer_if_expr(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::If {
+        let ExprKind::If {
             cond,
             then_branch,
             else_branch,
-            ty,
-            ..
-        } = expr
+        } = &mut expr.kind
         else {
             unreachable!("infer_if_expr called on non-If");
         };
@@ -915,12 +866,12 @@ impl TypeInferencer {
 
         self.unify(then_ty, else_ty)?;
 
-        *ty = then_ty;
+        expr.ty = then_ty;
         Ok(then_ty)
     }
 
     fn infer_range_literal(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::RangeLiteral { start, end, .. } = expr else {
+        let ExprKind::RangeLiteral { start, end } = &mut expr.kind else {
             unreachable!("infer_range_literal called on non-RangeLiteral");
         };
         let start_ty = self.infer_expr(start)?;
@@ -934,12 +885,10 @@ impl TypeInferencer {
     }
 
     fn infer_struct_init(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::StructInit {
-            ty,
+        let ExprKind::StructInit {
             struct_type,
             fields,
-            ..
-        } = expr
+        } = &mut expr.kind
         else {
             unreachable!("infer_struct_init called on non-StructInit");
         };
@@ -1028,17 +977,15 @@ impl TypeInferencer {
             self.unify(inferred_ty, expected_ty)?;
         }
 
-        *ty = resolved_ty;
+        expr.ty = resolved_ty;
         Ok(resolved_ty)
     }
 
     fn infer_field_access(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::FieldAccess {
+        let ExprKind::FieldAccess {
             expr: inner,
             field_name,
-            ty: field_ty,
-            ..
-        } = expr
+        } = &mut expr.kind
         else {
             unreachable!("infer_field_access called on non-FieldAccess");
         };
@@ -1098,17 +1045,15 @@ impl TypeInferencer {
             })?
             .1;
 
-        *field_ty = field_type_id;
+        expr.ty = field_type_id;
         Ok(field_type_id)
     }
 
     fn infer_enum_variant(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::EnumVariant {
+        let ExprKind::EnumVariant {
             enum_name,
             variant_name,
-            ty,
-            ..
-        } = expr
+        } = &mut expr.kind
         else {
             unreachable!("infer_enum_variant called on non-EnumVariant");
         };
@@ -1118,18 +1063,16 @@ impl TypeInferencer {
             .ok_or_else(|| type_err!("Unknown enum variant '{}.{}'", enum_name, variant_name))?;
 
         let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
-        *ty = enum_ty;
+        expr.ty = enum_ty;
         Ok(enum_ty)
     }
 
     fn infer_enum_init(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::EnumInit {
+        let ExprKind::EnumInit {
             enum_name,
             variant_name,
             args,
-            ty,
-            ..
-        } = expr
+        } = &mut expr.kind
         else {
             unreachable!("infer_enum_init called on non-EnumInit");
         };
@@ -1166,11 +1109,11 @@ impl TypeInferencer {
         for (arg, &expected_ty) in args.iter_mut().zip(variant_info.arg_types.iter()) {
             let arg_ty = self.infer_expr(arg)?;
             self.unify(arg_ty, expected_ty)?;
-            set_expr_type(arg, expected_ty);
+            arg.ty = expected_ty;
         }
 
         let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
-        *ty = enum_ty;
+        expr.ty = enum_ty;
         Ok(enum_ty)
     }
 
@@ -1178,7 +1121,7 @@ impl TypeInferencer {
     /// All elements must unify to the same type, and the result is `CArray(element_type, len)`.
     /// Empty array literals (`[]`) are rejected because the element type can't be determined.
     fn infer_array_literal(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::ArrayLiteral { elements, ty, .. } = expr else {
+        let ExprKind::ArrayLiteral { elements } = &mut expr.kind else {
             unreachable!("infer_array_literal called on non-ArrayLiteral");
         };
 
@@ -1196,7 +1139,7 @@ impl TypeInferencer {
         for elem in elements.iter_mut().skip(1) {
             let e_ty = self.infer_expr(elem)?;
             self.unify(elem_ty_id, e_ty)?;
-            set_expr_type(elem, elem_ty_id);
+            elem.ty = elem_ty_id;
         }
 
         // Resolve the element type to store it concretely in the CArray type
@@ -1205,19 +1148,17 @@ impl TypeInferencer {
             .resolve(elem_ty_id)
             .map_err(|e| type_err!("Failed to resolve array element type: {e}"))?;
         let array_ty = Type::CArray(Box::new(elem_ty), elements.len());
-        *ty = self.store.new_known(array_ty);
-        Ok(*ty)
+        expr.ty = self.store.new_known(array_ty);
+        Ok(expr.ty)
     }
 
     /// Infer type for an array index expression (e.g., `arr[i]`).
     /// Resolves the container to get the element type, and unifies the index with Int.
     fn infer_index(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let Expr::Index {
+        let ExprKind::Index {
             expr: container,
             index,
-            ty,
-            ..
-        } = expr
+        } = &mut expr.kind
         else {
             unreachable!("infer_index called on non-Index");
         };
@@ -1235,7 +1176,7 @@ impl TypeInferencer {
                 return Err(type_err!("Cannot index non-array type: {resolved}"));
             }
         };
-        *ty = elem_ty;
+        expr.ty = elem_ty;
         Ok(elem_ty)
     }
 

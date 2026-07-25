@@ -8,8 +8,8 @@ use crate::error::{self, CompilationError, Span};
 use crate::{Rule, parse_error};
 
 use super::ast::{
-    Block, Expr, Function, GlobalDecl, Include, Literal, MatchArm, MatchStmt, MetaArg, Metadata,
-    Param, Stmt,
+    Block, Expr, ExprKind, Function, GlobalDecl, Include, Literal, MatchArm, MatchStmt, MetaArg,
+    Metadata, Param, Stmt, StmtKind,
 };
 use super::module::{ImportType, ModuleImport, ModulePath};
 use super::type_ast::{
@@ -659,8 +659,14 @@ impl Parser {
                     Rule::if_stmt => self.parse_if_stmt(inner),
                     Rule::while_stmt => self.parse_while_stmt(inner),
                     Rule::for_stmt => self.parse_for_stmt(inner),
-                    Rule::break_stmt => Ok(Stmt::Break),
-                    Rule::continue_stmt => Ok(Stmt::Continue),
+                    Rule::break_stmt => Ok(Stmt {
+                        kind: StmtKind::Break,
+                        span: Span::from_pest(&inner.as_span()),
+                    }),
+                    Rule::continue_stmt => Ok(Stmt {
+                        kind: StmtKind::Continue,
+                        span: Span::from_pest(&inner.as_span()),
+                    }),
                     Rule::match_stmt => self.parse_match_stmt(inner),
                     other => Err(CompilationError::ParseError(format!(
                         "unexpected statement: {other:?}",
@@ -687,12 +693,14 @@ impl Parser {
             .map(|p| self.parse_expr(p))
             .transpose()?;
 
-        let span = Some(Span::from_pest(&pair.as_span()));
-        Ok(Stmt::VarDecl {
-            name,
-            annotation,
-            inferred: TypeId::default(),
-            init,
+        let span = Span::from_pest(&pair.as_span());
+        Ok(Stmt {
+            kind: StmtKind::VarDecl {
+                name,
+                annotation,
+                inferred: TypeId::default(),
+                init,
+            },
             span,
         })
     }
@@ -788,19 +796,28 @@ impl Parser {
 
     fn parse_expr_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
+        let span = Span::from_pest(&parent_span);
         // expr_stmt = { expr ~ ";" }
         let expr_pair = pair.into_inner().next().ok_or_else(|| {
             parse_error!("expression statement is empty")
                 .with_context(self.context_from_span(&parent_span))
         })?;
-        Ok(Stmt::Expr(self.parse_expr(expr_pair)?))
+        let expr = self.parse_expr(expr_pair)?;
+        Ok(Stmt {
+            kind: StmtKind::Expr(expr),
+            span,
+        })
     }
 
     fn parse_return(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // return_stmt = { "return" ~ expr? ~ ";" }
+        let span = Span::from_pest(&pair.as_span());
         let mut inner = pair.into_inner();
         let expr = inner.next().map(|p| self.parse_expr(p)).transpose()?;
-        Ok(Stmt::Return(expr))
+        Ok(Stmt {
+            kind: StmtKind::Return(expr),
+            span,
+        })
     }
 
     fn parse_if_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
@@ -840,17 +857,19 @@ impl Parser {
             else_branch = Some(else_block);
         }
 
-        Ok(Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            span: Some(Span::from_pest(&parent_span)),
+        Ok(Stmt {
+            kind: StmtKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            },
+            span: Span::from_pest(&parent_span),
         })
     }
 
     fn parse_while_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
-        let span = Some(Span::from_pest(&parent_span));
+        let span = Span::from_pest(&parent_span);
         // while_stmt = { "while" ~ expr ~ block }
         let mut inner = pair.into_inner();
         let cond = self.parse_expr(inner.next().ok_or_else(|| {
@@ -861,12 +880,15 @@ impl Parser {
             parse_error!("while statement missing body")
                 .with_context(self.context_from_span(&parent_span))
         })?)?;
-        Ok(Stmt::While { cond, body, span })
+        Ok(Stmt {
+            kind: StmtKind::While { cond, body },
+            span,
+        })
     }
 
     fn parse_for_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
-        let span = Some(Span::from_pest(&parent_span));
+        let span = Span::from_pest(&parent_span);
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
         let mut inner = pair.into_inner();
         let var = Self::pair_text(inner.next().ok_or_else(|| {
@@ -881,12 +903,15 @@ impl Parser {
             parse_error!("for statement missing body")
                 .with_context(self.context_from_span(&parent_span))
         })?)?;
-        Ok(Stmt::For { var, iter, body, span })
+        Ok(Stmt {
+            kind: StmtKind::For { var, iter, body },
+            span,
+        })
     }
 
     fn parse_match_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
-        let span = Some(Span::from_pest(&parent_span));
+        let span = Span::from_pest(&parent_span);
         // match_stmt = { "match" ~ expr ~ "{" ~ (match_case)* ~ (default_case)? ~ "}" }
         let mut inner = pair.into_inner();
         let expr = self.parse_expr(inner.next().ok_or_else(|| {
@@ -909,12 +934,15 @@ impl Parser {
                             .with_context(self.context_from_span(&case_span))
                     })?)?;
                     let body = Block {
-                        stmts: vec![Stmt::Expr(body_expr)],
+                        stmts: vec![Stmt {
+                            kind: StmtKind::Expr(body_expr),
+                            span: Span::from_pest(&case_span),
+                        }],
                     };
                     arms.push(MatchArm {
                         pattern,
                         body,
-                        span: Some(Span::from_pest(&case_span)),
+                        span: Span::from_pest(&case_span),
                     });
                 }
                 Rule::default_case => {
@@ -925,7 +953,10 @@ impl Parser {
                             .with_context(self.context_from_span(&def_span))
                     })?)?;
                     let body = Block {
-                        stmts: vec![Stmt::Expr(body_expr)],
+                        stmts: vec![Stmt {
+                            kind: StmtKind::Expr(body_expr),
+                            span: Span::from_pest(&def_span),
+                        }],
                     };
                     default_arm = Some(body);
                 }
@@ -939,19 +970,24 @@ impl Parser {
                 // checks `name == "default"` before touching `ty`, so this is
                 // never read.  If you add a new code path that inspects the
                 // pattern's `ty`, guard it against the sentinel first.
-                pattern: Expr::Identifier {
-                    name: "default".to_string(),
+                pattern: Expr {
+                    kind: ExprKind::Identifier {
+                        name: "default".to_string(),
+                    },
                     ty: TypeId::default(),
-                    span: None,
+                    span: Span::from_pest(&match_span),
                 },
                 body: def,
-                span: Some(Span::from_pest(&match_span)),
+                span: Span::from_pest(&match_span),
             });
         }
-        Ok(Stmt::Match(MatchStmt {
-            expr: Box::new(expr),
-            arms,
+        Ok(Stmt {
+            kind: StmtKind::Match(MatchStmt {
+                expr: Box::new(expr),
+                arms,
+                span: Span::from_pest(&parent_span),
+            }),
             span,
-        }))
+        })
     }
 }

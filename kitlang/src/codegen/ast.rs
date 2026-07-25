@@ -31,14 +31,13 @@ pub fn has_meta(metas: &[Metadata], name: &str) -> bool {
     metas.iter().any(|m| m.has_name(name))
 }
 
-/// Returns `true` if the metadata list contains `#[extern]` or `#[expose]` - both of which
-/// prevent name mangling.
+/// Returns `true` if the metadata list contains `#[extern]` or `#[expose]` - both of which prevent
+/// name mangling.
 pub fn is_unmangled(metas: &[Metadata]) -> bool {
     has_meta(metas, "extern") || has_meta(metas, "expose")
 }
 
-/// Trait for AST declaration types that carry metadata attributes
-/// (`#[extern]`, `#[expose]`, etc.).
+/// Trait for AST declaration types that carry metadata attributes (`#[extern]`, `#[expose]`, etc.)
 ///
 /// Provides:
 /// - Raw access to the metadata list
@@ -58,9 +57,9 @@ pub trait Attributed {
         has_meta(self.metadata(), "extern")
     }
 
-    /// Returns `ModulePath::new()` (empty = no mangling) when `is_unmangled()` is true,
-    /// otherwise returns `current_module`. Use this as the module path argument to
-    /// `mangle_name` / `mangle_enum_variant` to control name mangling.
+    /// Returns `ModulePath::new()` (empty = no mangling) when `is_unmangled()` is true, otherwise
+    /// returns `current_module`. Use this as the module path argument to `mangle_name` /
+    /// `mangle_enum_variant` to control name mangling.
     fn mangling_module(&self, current_module: &ModulePath) -> ModulePath {
         if self.is_unmangled() {
             ModulePath::new()
@@ -81,7 +80,7 @@ pub struct Include {
 
 impl Include {
     /// Create an include without an associated library.
-    pub fn new(path: String) -> Self {
+    pub const fn new(path: String) -> Self {
         Self {
             path,
             linked_lib: None,
@@ -89,7 +88,7 @@ impl Include {
     }
 
     /// Create an include with an associated library name (passed as `-l` to the linker).
-    pub fn with_lib(path: String, lib: String) -> Self {
+    pub const fn with_lib(path: String, lib: String) -> Self {
         Self {
             path,
             linked_lib: Some(lib),
@@ -142,7 +141,14 @@ pub struct Block {
 
 /// Represents a statement in Kit.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Stmt {
+pub struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+/// The inner kind of a statement (without span metadata).
+#[derive(Clone, Debug, PartialEq)]
+pub enum StmtKind {
     /// Variable declaration (with optional type annotation and initializer).
     VarDecl {
         /// Variable name.
@@ -153,7 +159,6 @@ pub enum Stmt {
         inferred: TypeId,
         /// Initializer expression (`None` for uninitialized).
         init: Option<Expr>,
-        span: Option<Span>,
     },
     /// Expression statement.
     Expr(Expr),
@@ -167,7 +172,6 @@ pub enum Stmt {
         then_branch: Block,
         /// The block to execute if the condition is false.
         else_branch: Option<Block>,
-        span: Option<Span>,
     },
     /// While loop statement.
     While {
@@ -175,7 +179,6 @@ pub enum Stmt {
         cond: Expr,
         /// The block to execute as long as the condition is true.
         body: Block,
-        span: Option<Span>,
     },
     /// For loop statement.
     For {
@@ -185,7 +188,6 @@ pub enum Stmt {
         iter: Expr,
         /// The block to execute for each iteration.
         body: Block,
-        span: Option<Span>,
     },
     /// Break statement.
     Break,
@@ -195,6 +197,12 @@ pub enum Stmt {
     Match(MatchStmt),
 }
 
+impl Stmt {
+    pub fn new(kind: StmtKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+}
+
 /// Represents a single arm of a match statement: `pattern => body`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchArm {
@@ -202,7 +210,7 @@ pub struct MatchArm {
     pub pattern: Expr,
     /// The block to execute if the pattern matches.
     pub body: Block,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 /// Represents a match statement: `match expr { arm1; arm2; ... }`.
@@ -212,58 +220,44 @@ pub struct MatchStmt {
     pub expr: Box<Expr>,
     /// The list of match arms (pattern → body).
     pub arms: Vec<MatchArm>,
-    pub span: Option<Span>,
+    pub span: Span,
 }
 
 /// Represents an expression in Kit.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub ty: TypeId,
+    pub span: Span,
+}
+
+/// The inner kind of an expression (without type and span metadata).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExprKind {
     /// Variable or function identifier.
-    Identifier {
-        name: String,
-        ty: TypeId,
-        span: Option<Span>,
-    },
+    Identifier { name: String },
     /// Literal value.
-    Literal {
-        value: Literal,
-        ty: TypeId,
-        span: Option<Span>,
-    },
+    Literal { value: Literal },
     /// Function call.
     Call {
         /// Callee expression (any expression that evaluates to a callable type).
         callee: Box<Expr>,
         /// Arguments passed to the function.
         args: Vec<Expr>,
-        /// Inferred return type.
-        ty: TypeId,
-        span: Option<Span>,
     },
     /// Unary operation.
-    UnaryOp {
-        op: UnaryOperator,
-        expr: Box<Expr>,
-        ty: TypeId,
-        span: Option<Span>,
-    },
+    UnaryOp { op: UnaryOperator, expr: Box<Expr> },
     /// Binary operation.
     BinaryOp {
         op: BinaryOperator,
         left: Box<Expr>,
         right: Box<Expr>,
-        /// Inferred result type.
-        ty: TypeId,
-        span: Option<Span>,
     },
     /// Assignment operation.
     Assign {
         op: AssignmentOperator,
         left: Box<Expr>,
         right: Box<Expr>,
-        /// Inferred result type.
-        ty: TypeId,
-        span: Option<Span>,
     },
     /// If-then-else expression.
     If {
@@ -273,9 +267,6 @@ pub enum Expr {
         then_branch: Box<Expr>,
         /// The expression to evaluate if the condition is false.
         else_branch: Box<Expr>,
-        /// Inferred result type.
-        ty: TypeId,
-        span: Option<Span>,
     },
     /// Range literal expression (e.g., `1...10`).
     RangeLiteral {
@@ -283,17 +274,13 @@ pub enum Expr {
         start: Box<Expr>,
         /// The end of the range (inclusive).
         end: Box<Expr>,
-        span: Option<Span>,
     },
     /// Struct initialization expression (e.g., `Point { x: 10, y: 20 }`).
     StructInit {
-        /// The struct type being instantiated (filled during inference).
-        ty: TypeId,
         /// The parsed type annotation (for lookup during inference).
         struct_type: Option<Type>,
         /// Field initializers.
         fields: Vec<FieldInit>,
-        span: Option<Span>,
     },
     /// Field access expression (e.g., `p.x` or `a.b.c`).
     FieldAccess {
@@ -301,9 +288,6 @@ pub enum Expr {
         expr: Box<Expr>,
         /// The field name to access.
         field_name: String,
-        /// Inferred result type.
-        ty: TypeId,
-        span: Option<Span>,
     },
     /// Enum variant constructor (simple variant without arguments).
     EnumVariant {
@@ -311,9 +295,6 @@ pub enum Expr {
         enum_name: String,
         /// The variant name.
         variant_name: String,
-        /// Inferred type.
-        ty: TypeId,
-        span: Option<Span>,
     },
     /// Enum initialization (variant with arguments).
     EnumInit {
@@ -323,17 +304,11 @@ pub enum Expr {
         variant_name: String,
         /// Arguments to the variant constructor.
         args: Vec<Expr>,
-        /// Inferred type.
-        ty: TypeId,
-        span: Option<Span>,
     },
     /// Array literal (e.g., `[1, 2, 3]`). Inferred type is `CArray(element_type, len)`.
     ArrayLiteral {
         /// The element elements.
         elements: Vec<Expr>,
-        /// Inferred `CArray` type.
-        ty: TypeId,
-        span: Option<Span>,
     },
     /// Array index access (e.g., `arr[i]`).
     Index {
@@ -341,30 +316,12 @@ pub enum Expr {
         expr: Box<Expr>,
         /// The index expression.
         index: Box<Expr>,
-        /// Inferred element type.
-        ty: TypeId,
-        span: Option<Span>,
     },
 }
 
 impl Expr {
-    pub fn span(&self) -> Option<&Span> {
-        match self {
-            Expr::Identifier { span, .. }
-            | Expr::Literal { span, .. }
-            | Expr::Call { span, .. }
-            | Expr::UnaryOp { span, .. }
-            | Expr::BinaryOp { span, .. }
-            | Expr::Assign { span, .. }
-            | Expr::If { span, .. }
-            | Expr::RangeLiteral { span, .. }
-            | Expr::StructInit { span, .. }
-            | Expr::FieldAccess { span, .. }
-            | Expr::EnumVariant { span, .. }
-            | Expr::EnumInit { span, .. }
-            | Expr::ArrayLiteral { span, .. }
-            | Expr::Index { span, .. } => span.as_ref(),
-        }
+    pub fn new(kind: ExprKind, ty: TypeId, span: Span) -> Self {
+        Self { kind, ty, span }
     }
 }
 

@@ -633,11 +633,11 @@ impl Compiler {
         let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
 
         // Set source context on the inferencer for error reporting.
-        if let Some(first_file) = self.files.first() {
-            if let Ok(source_text) = fs::read_to_string(first_file) {
-                self.inferencer = std::mem::take(&mut self.inferencer)
-                    .with_source(first_file.to_string_lossy().to_string(), source_text);
-            }
+        if let Some(first_file) = self.files.first()
+            && let Ok(source_text) = fs::read_to_string(first_file)
+        {
+            self.inferencer = std::mem::take(&mut self.inferencer)
+                .with_source(first_file.to_string_lossy().to_string(), source_text);
         }
 
         self.inferencer.infer_program(&mut merged)?;

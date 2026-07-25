@@ -7,7 +7,9 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::codegen::ast::{Attributed, Block, Expr, Function, GlobalDecl, Program, Stmt};
+use crate::codegen::ast::{
+    Attributed, Block, Expr, ExprKind, Function, GlobalDecl, Program, Stmt, StmtKind,
+};
 use crate::codegen::module::{ModulePath, ModuleRegistry};
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
 use crate::codegen::parser::expr_pratt::callee_name;
@@ -81,7 +83,10 @@ fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl 
         }
 
         for stmt in &func.body.stmts {
-            if let Stmt::VarDecl { inferred, .. } = stmt
+            if let Stmt {
+                kind: StmtKind::VarDecl { inferred, .. },
+                ..
+            } = stmt
                 && let Ok(ty) = inferencer.store.resolve(*inferred)
             {
                 f(&ty);
@@ -117,22 +122,7 @@ pub(super) fn collect_type_headers_and_decls(
 
 impl CodegenCtx<'_> {
     fn expr_type_id(expr: &Expr) -> TypeId {
-        match expr {
-            Expr::Identifier { ty, .. }
-            | Expr::Literal { ty, .. }
-            | Expr::Call { ty, .. }
-            | Expr::UnaryOp { ty, .. }
-            | Expr::BinaryOp { ty, .. }
-            | Expr::Assign { ty, .. }
-            | Expr::If { ty, .. }
-            | Expr::StructInit { ty, .. }
-            | Expr::FieldAccess { ty, .. }
-            | Expr::EnumVariant { ty, .. }
-            | Expr::EnumInit { ty, .. }
-            | Expr::ArrayLiteral { ty, .. }
-            | Expr::Index { ty, .. } => *ty,
-            Expr::RangeLiteral { .. } => TypeId::default(),
-        }
+        expr.ty
     }
 
     fn resolve_type_to_c_name(&self, type_id: TypeId, fallback: &str) -> String {
@@ -189,7 +179,10 @@ impl CodegenCtx<'_> {
 
         match &global.init {
             // Array literals as initializers need plain brace-enclosed lists
-            Some(Expr::ArrayLiteral { elements, .. }) => {
+            Some(Expr {
+                kind: ExprKind::ArrayLiteral { elements, .. },
+                ..
+            }) => {
                 let elems = elements
                     .iter()
                     .map(|e| self.transpile_expr(e))
@@ -219,7 +212,15 @@ impl CodegenCtx<'_> {
         let mut body_code = self.transpile_block(&func.body);
 
         if func.name == "main" {
-            let has_return = func.body.stmts.iter().any(|s| matches!(s, Stmt::Return(_)));
+            let has_return = func.body.stmts.iter().any(|s| {
+                matches!(
+                    s,
+                    Stmt {
+                        kind: StmtKind::Return(_),
+                        ..
+                    }
+                )
+            });
             if !has_return && let Some(pos) = body_code.rfind('}') {
                 body_code.insert_str(pos, "return 0;\n");
             }
@@ -233,17 +234,19 @@ impl CodegenCtx<'_> {
     }
 
     fn transpile_stmt(&self, stmt: &Stmt) -> String {
-        match stmt {
-            Stmt::VarDecl {
+        match &stmt.kind {
+            StmtKind::VarDecl {
                 name,
                 annotation: _,
                 inferred,
                 init,
-                ..
             } => {
                 let decl = self.format_var_decl(*inferred, name);
                 match init {
-                    Some(Expr::ArrayLiteral { elements, .. }) => {
+                    Some(Expr {
+                        kind: ExprKind::ArrayLiteral { elements, .. },
+                        ..
+                    }) => {
                         let elems = elements
                             .iter()
                             .map(|e| self.transpile_expr(e))
@@ -255,16 +258,15 @@ impl CodegenCtx<'_> {
                     None => format!("{decl};\n"),
                 }
             }
-            Stmt::Expr(expr) => format!("{};\n", self.transpile_expr(expr)),
-            Stmt::Return(expr) => match expr {
+            StmtKind::Expr(expr) => format!("{};\n", self.transpile_expr(expr)),
+            StmtKind::Return(expr) => match expr {
                 Some(e) => format!("return {};\n", self.transpile_expr(e)),
                 None => "return;\n".to_string(),
             },
-            Stmt::If {
+            StmtKind::If {
                 cond,
                 then_branch,
                 else_branch,
-                ..
             } => {
                 let mut s = format!("if ({}) ", self.transpile_expr(cond));
                 s.push_str(&self.transpile_block(then_branch));
@@ -275,16 +277,16 @@ impl CodegenCtx<'_> {
                 s.push('\n');
                 s
             }
-            Stmt::While { cond, body, .. } => {
+            StmtKind::While { cond, body } => {
                 let mut s = format!("while ({}) ", self.transpile_expr(cond));
                 s.push_str(&self.transpile_block(body));
                 s.push('\n');
                 s
             }
-            Stmt::For { var, iter, body, .. } => self.transpile_for(var, iter, body),
-            Stmt::Match(m) => self.transpile_match_stmt(m),
-            Stmt::Break => "break;\n".to_string(),
-            Stmt::Continue => "continue;\n".to_string(),
+            StmtKind::For { var, iter, body } => self.transpile_for(var, iter, body),
+            StmtKind::Match(m) => self.transpile_match_stmt(m),
+            StmtKind::Break => "break;\n".to_string(),
+            StmtKind::Continue => "continue;\n".to_string(),
         }
     }
 
@@ -322,7 +324,11 @@ impl CodegenCtx<'_> {
             body_code.push('}');
             s.push_str(&body_code);
             s
-        } else if let Expr::RangeLiteral { start, end, .. } = iter {
+        } else if let Expr {
+            kind: ExprKind::RangeLiteral { start, end, .. },
+            ..
+        } = iter
+        {
             let start_str = self.transpile_expr(start);
             let end_str = self.transpile_expr(end);
             let mut s = format!("for (int {var} = {start_str}; {var} < {end_str}; ++{var}) ");
@@ -624,8 +630,8 @@ impl CodegenCtx<'_> {
     }
 
     fn transpile_expr(&self, expr: &Expr) -> String {
-        match expr {
-            Expr::Identifier { name, .. } => {
+        match &expr.kind {
+            ExprKind::Identifier { name } => {
                 if let Some(mod_path) = self.find_global_module(name) {
                     // Global variable reference.
                     if is_unmangled_in_module!(self.registry, &mod_path, name.as_str(), globals) {
@@ -647,68 +653,63 @@ impl CodegenCtx<'_> {
                     name.clone()
                 }
             }
-            Expr::Literal { value: lit, ty, .. } => {
-                let is_c_float = self.inferencer.store.resolve(*ty).is_ok_and(|t| {
+            ExprKind::Literal { value: lit } => {
+                let is_c_float = self.inferencer.store.resolve(expr.ty).is_ok_and(|t| {
                     matches!(t, Type::Float) // only C float gets the suffix, double does not
                 });
                 lit.to_c_with_float(is_c_float)
             }
-            Expr::Call { callee, args, .. } => self.transpile_call(callee, args),
-            Expr::UnaryOp { op, expr, .. } => {
-                format!("{}({})", op.to_c_str(), self.transpile_expr(expr))
+            ExprKind::Call { callee, args } => self.transpile_call(callee, args),
+            ExprKind::UnaryOp { op, expr: inner } => {
+                format!("{}({})", op.to_c_str(), self.transpile_expr(inner))
             }
-            Expr::BinaryOp {
-                op, left, right, ..
-            } => {
+            ExprKind::BinaryOp { op, left, right } => {
                 let l = self.transpile_expr(left);
                 let r = self.transpile_expr(right);
                 format!("({l} {} {r})", op.to_c_str())
             }
-            Expr::Assign {
-                op, left, right, ..
-            } => {
+            ExprKind::Assign { op, left, right } => {
                 let l = self.transpile_expr(left);
                 let r = self.transpile_expr(right);
                 format!("{l} {} {r}", op.to_c_str())
             }
-            Expr::If {
+            ExprKind::If {
                 cond,
                 then_branch,
                 else_branch,
-                ..
             } => {
                 let c = self.transpile_expr(cond);
                 let t = self.transpile_expr(then_branch);
                 let e = self.transpile_expr(else_branch);
                 format!("({c} ? {t} : {e})")
             }
-            Expr::RangeLiteral { .. } => "/* range literal */ 0".to_string(),
-            Expr::StructInit { ty, fields, .. } => self.transpile_struct_init(*ty, fields),
-            Expr::FieldAccess {
-                expr, field_name, ..
-            } => self.transpile_field_access(expr, field_name),
-            Expr::Index { expr, index, .. } => {
-                let container = self.transpile_expr(expr);
+            ExprKind::RangeLiteral { .. } => "/* range literal */ 0".to_string(),
+            ExprKind::StructInit { fields, .. } => self.transpile_struct_init(expr.ty, fields),
+            ExprKind::FieldAccess {
+                expr: inner,
+                field_name,
+            } => self.transpile_field_access(inner, field_name),
+            ExprKind::Index { expr: inner, index } => {
+                let container = self.transpile_expr(inner);
                 let idx = self.transpile_expr(index);
                 format!("({container})[{idx}]")
             }
-            Expr::EnumInit {
+            ExprKind::EnumInit {
                 enum_name,
                 variant_name,
                 args,
-                ..
             } if args.is_empty() => self.mangled_enum_variant(enum_name, variant_name),
-            Expr::EnumVariant {
+            ExprKind::EnumVariant {
                 enum_name,
                 variant_name,
-                ..
             } => self.mangled_enum_variant(enum_name, variant_name),
-            Expr::ArrayLiteral { elements, ty, .. } => self.transpile_array_literal(*ty, elements),
-            Expr::EnumInit {
+            ExprKind::ArrayLiteral { elements, .. } => {
+                self.transpile_array_literal(expr.ty, elements)
+            }
+            ExprKind::EnumInit {
                 enum_name,
                 variant_name,
                 args,
-                ..
             } => {
                 let a = self.transpile_enum_args_with_defaults(enum_name, variant_name, args);
                 let ctor = mangle_enum_variant(&self.current_module, enum_name, variant_name);
