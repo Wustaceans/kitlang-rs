@@ -45,6 +45,11 @@ impl TypeInferencer {
         &self.symbols
     }
 
+    /// Get a mutable reference to the symbol table (for registering C declarations)
+    pub fn symbols_mut(&mut self) -> &mut SymbolTable {
+        &mut self.symbols
+    }
+
     /// Wrap a result with source context from an expression's span, if available.
     fn wrap_err<T>(&self, result: CompileResult<T>, span: Option<&Span>) -> CompileResult<T> {
         result.map_err(|e| {

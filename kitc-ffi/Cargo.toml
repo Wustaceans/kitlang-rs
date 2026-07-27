@@ -1,0 +1,12 @@
+[package]
+name = "kitc-ffi"
+version = "0.1.0"
+edition = "2024"
+description = "C header parsing and FFI declaration extraction for the Kit compiler"
+
+[dependencies]
+includium = "0.1.3"
+tree-sitter = "0.26.11"
+tree-sitter-c = "0.24.2"
+log = "0.4.33"
+thiserror = "2.0.19"

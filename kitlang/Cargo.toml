@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-log = "0.4.27"
+kitc-ffi = { path = "../kitc-ffi" }
+log = "0.4.33"
 logos = "0.16.1"
-pest = "2.8.0"
-pest_derive = "2.8.0"
+pest = "2.8.8"
+pest_derive = "2.8.8"
 strum = { version = "0.28.0", features = ["derive"] }
-thiserror = "2.0.12"
+thiserror = "2.0.19"
 walkdir = "2.5.0"
-which = "8.0.0"
+which = "8.0.5"

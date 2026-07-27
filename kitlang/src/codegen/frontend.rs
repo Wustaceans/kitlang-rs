@@ -623,14 +623,12 @@ impl Compiler {
     ///
     /// The compilation pipeline:
     /// 1. Build the module dependency graph
-    /// 2. Type inference on the merged program
-    /// 3. Generate per-module `.c` and `.h` files
-    /// 4. Invoke the system C compiler to link everything into an executable
+    /// 2. Register C header declarations from includes
+    /// 3. Type inference on the merged program
+    /// 4. Generate per-module `.c` and `.h` files
+    /// 5. Invoke the system C compiler to link everything into an executable
     pub fn compile(&mut self) -> CompileResult<()> {
         let sorted_paths = self.build_module_graph()?;
-
-        // Single inference pass (codegen borrows results read-only)
-        let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
 
         // Set source context on the inferencer for error reporting.
         if let Some(first_file) = self.files.first()
@@ -640,8 +638,30 @@ impl Compiler {
                 .with_source(first_file.to_string_lossy().to_string(), source_text);
         }
 
+        // Step 1: Register C header declarations from all modules' include statements.
+        // This must happen BEFORE type inference so C function signatures are available.
+        for module in self.registry.all_modules() {
+            let source_path = module.source_path.clone();
+            let includes = module.includes.clone();
+            if !includes.is_empty() {
+                log::info!(
+                    "Processing {} include(s) for module '{}'",
+                    includes.len(),
+                    module.path
+                );
+                super::ffi::register_module_includes(
+                    &includes,
+                    &source_path,
+                    &mut self.inferencer,
+                )?;
+            }
+        }
+
+        // Step 2: Type inference on the merged program
+        let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
         self.inferencer.infer_program(&mut merged)?;
 
+        // Step 3: Generate per-module C code
         let mut ctx = CodegenCtx {
             inferencer: &self.inferencer,
             registry: &self.registry,

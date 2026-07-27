@@ -20,6 +20,7 @@ use super::ast::Param;
 use super::inference::TypeInferencer;
 
 /// Context for C code generation, borrowing inference results and module registry.
+///
 /// Constructed after type inference completes - all methods are read-only on analysis data.
 pub(crate) struct CodegenCtx<'a> {
     pub(crate) inferencer: &'a TypeInferencer,
@@ -188,10 +189,12 @@ impl CodegenCtx<'_> {
                     .map(|e| self.transpile_expr(e))
                     .collect::<Vec<_>>()
                     .join(", ");
+
                 format!("{extern_prefix}{const_prefix}{decl} = {{{elems}}};")
             }
             Some(expr) => {
                 let init_str = self.transpile_expr(expr);
+
                 format!("{extern_prefix}{const_prefix}{decl} = {init_str};")
             }
             None => format!("{extern_prefix}{const_prefix}{decl};"),
@@ -200,6 +203,7 @@ impl CodegenCtx<'_> {
 
     fn transpile_function(&self, func: &Function) -> String {
         debug_assert!(!func.name.is_empty(), "function with empty name");
+
         let return_type = self.resolve_return_type_c_name(func);
         let module = func.mangling_module(&self.current_module);
         let func_name = if func.name == "main" && !self.current_module.is_empty() {
@@ -227,6 +231,7 @@ impl CodegenCtx<'_> {
         }
 
         let extern_prefix = if func.is_extern() { "extern " } else { "" };
+
         format!(
             "{extern_prefix}{} {}({}) {}",
             return_type, func_name, params, body_code
@@ -252,6 +257,7 @@ impl CodegenCtx<'_> {
                             .map(|e| self.transpile_expr(e))
                             .collect::<Vec<_>>()
                             .join(", ");
+
                         format!("{decl} = {{{elems}}};\n")
                     }
                     Some(expr) => format!("{decl} = {};\n", self.transpile_expr(expr)),
@@ -296,6 +302,7 @@ impl CodegenCtx<'_> {
             .store
             .resolve(Self::expr_type_id(iter))
             .is_ok_and(|t| matches!(t, Type::CArray(..)));
+
         if is_carray {
             let Type::CArray(elem_type, size) = self
                 .inferencer
@@ -360,6 +367,16 @@ impl CodegenCtx<'_> {
     fn resolve_function_name(&self, name: &str) -> Option<(ModulePath, String)> {
         self.registry
             .resolve_qualified_name(name, &self.current_module)
+    }
+
+    /// Check if a function name is declared in the current module's program.
+    ///
+    /// Returns `false` for C interop functions (registered from headers but not defined in any
+    /// module's Kit source code).
+    fn is_function_in_current_module(&self, name: &str) -> bool {
+        self.registry
+            .get(&self.current_module)
+            .is_some_and(|m| m.program.functions.iter().any(|f| f.name == name))
     }
 
     // XXX: searches ALL modules, ignores import visibility.
@@ -561,6 +578,7 @@ impl CodegenCtx<'_> {
             }
         } else if self.inferencer.symbols().lookup_function(name).is_some()
             && !self.current_module.is_empty()
+            && self.is_function_in_current_module(name)
         {
             mangle_name(&self.current_module, name)
         } else {

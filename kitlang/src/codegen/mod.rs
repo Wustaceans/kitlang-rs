@@ -38,6 +38,9 @@ pub mod frontend;
 /// Hindley-Milner type inference engine.
 pub mod inference;
 
+/// C header parsing and FFI declaration integration.
+pub mod ffi;
+
 /// Module-aware name mangling for C identifier generation.
 pub mod name_mangling;
 
