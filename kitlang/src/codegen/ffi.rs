@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use kitc_common::get_builtin_headers;
 use kitc_ffi::types::*;
 use kitc_ffi::{PreprocessConfig, Target, extract_header, extract_header_from_source};
 
@@ -11,11 +12,11 @@ use crate::error::CompileResult;
 
 /// Register C header declarations into the Kit compiler's type system.
 ///
-/// Uses default configuration with fake system headers enabled.
+/// Uses default configuration with builtin system headers enabled.
 /// For custom configuration, use `register_c_header_with_config`.
 pub fn register_c_header(header_path: &str, inferencer: &mut TypeInferencer) -> CompileResult<()> {
     let config = PreprocessConfig::new()
-        .with_fake_system_headers(true)
+        .with_builtin_headers(true)
         .with_target(current_target());
     register_c_header_with_config(header_path, config, inferencer)
 }
@@ -36,22 +37,28 @@ pub fn register_c_header_with_config(
     register_declarations(decls, inferencer)
 }
 
-/// Register declarations from a fake system header by name.
-fn register_fake_header(header_name: &str, inferencer: &mut TypeInferencer) -> CompileResult<()> {
-    let content = kitc_ffi::system_headers::FakeHeaders::get(header_name).ok_or_else(|| {
-        crate::error::CompilationError::CompileError(format!(
-            "No fake header available for '{}'",
-            header_name
-        ))
-    })?;
+/// Register declarations from a builtin system header by name.
+fn register_builtin_header(
+    header_name: &str,
+    inferencer: &mut TypeInferencer,
+) -> CompileResult<()> {
+    let content = get_builtin_headers()
+        .get(header_name)
+        .copied()
+        .ok_or_else(|| {
+            crate::error::CompilationError::CompileError(format!(
+                "No builtin header available for '{}'",
+                header_name
+            ))
+        })?;
 
     let config = PreprocessConfig::new()
-        .with_fake_system_headers(true)
+        .with_builtin_headers(true)
         .with_target(current_target());
 
     let decls = extract_header_from_source(content, &config).map_err(|e| {
         crate::error::CompilationError::CompileError(format!(
-            "Failed to parse fake header '{}': {e}",
+            "Failed to process builtin header '{}': {e}",
             header_name
         ))
     })?;
@@ -346,14 +353,14 @@ pub fn register_module_includes(
             if let Err(e) = register_c_header(&path_str, inferencer) {
                 log::warn!("Failed to register C header '{}': {e}", inc.path);
             }
-        } else if kitc_ffi::system_headers::FakeHeaders::has_fake(header_name) {
-            log::info!("Using fake system header for '{}'", header_name);
-            if let Err(e) = register_fake_header(header_name, inferencer) {
-                log::warn!("Failed to register fake header '{}': {e}", header_name);
+        } else if get_builtin_headers().contains_key(header_name) {
+            log::info!("Using builtin system header for '{}'", header_name);
+            if let Err(e) = register_builtin_header(header_name, inferencer) {
+                log::warn!("Failed to register builtin header '{}': {e}", header_name);
             }
         } else {
             log::debug!(
-                "C header '{}' not found on disk and no fake version available",
+                "C header '{}' not found on disk and no builtin version available",
                 inc.path
             );
         }

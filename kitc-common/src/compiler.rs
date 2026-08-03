@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use which::which;
 
-use crate::error::{CompilationError, CompileResult};
+pub use crate::error::Error;
 
 const CANDIDATES: &[&str] = &[
     #[cfg(windows)]
@@ -17,12 +17,20 @@ const CANDIDATES: &[&str] = &[
 
 type NoSearch = fn(&Path) -> Option<String>;
 
-#[derive(Debug, Clone, Copy)]
+/// Represents the detected C compiler toolchain.
+///
+/// The toolchain determines the flag dialect, output flag, and standard flags used
+/// when invoking the compiler for C code generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Toolchain {
+    /// GCC-compatible toolchain (gcc, cc).
     Gcc,
+    /// Clang toolchain (clang, clang-cl).
     Clang,
+    /// Microsoft Visual C++ toolchain (cl.exe). Only available on Windows.
     #[cfg(windows)]
     Msvc,
+    /// Unknown or unsupported toolchain. Treated as GCC-compatible for best-effort compilation.
     Other,
 }
 
@@ -79,16 +87,6 @@ impl Toolchain {
     /// 2. Known candidates on PATH (`cl`, `cc`, `clang`, `gcc`).
     ///
     /// The returned `Toolchain` enum describes the *detected* compiler type (gcc/clang/msvc).
-    /// Detect the toolchain for a specific compiler executable path without searching `PATH`. Used
-    /// when the user supplies an explicit `--cc` override.
-    ///
-    /// Detection is filename-based (e.g. a path ending in `cl.exe` is MSVC, `clang` is Clang,
-    /// everything else is treated as GCC-compatible). Falls back to `Gcc` for unrecognized names
-    /// rather than `Other`, so that the caller can still attempt compilation with the override.
-    pub fn from_path_lossy(path: &Path) -> Toolchain {
-        detect_toolchain::<NoSearch>(path, None)
-    }
-
     pub fn executable_path() -> Option<(Toolchain, PathBuf)> {
         // Respect an explicit compiler override first.
         //
@@ -124,6 +122,20 @@ impl Toolchain {
         None
     }
 
+    /// Detect the toolchain for a specific compiler executable path without searching `PATH`. Used
+    /// when the user supplies an explicit `--cc` override.
+    ///
+    /// Detection is filename-based (e.g. a path ending in `cl.exe` is MSVC, `clang` is Clang,
+    /// everything else is treated as GCC-compatible). Falls back to `Gcc` for unrecognized names
+    /// rather than `Other`, so that the caller can still attempt compilation with the override.
+    pub fn from_path_lossy(path: &Path) -> Toolchain {
+        detect_toolchain::<NoSearch>(path, None)
+    }
+
+    /// Returns `true` if this toolchain is MSVC.
+    ///
+    /// This is only true on Windows when the toolchain is explicitly detected as MSVC.
+    /// On non-Windows platforms, always returns `false`.
     pub const fn is_msvc(&self) -> bool {
         #[cfg(windows)]
         {
@@ -136,6 +148,7 @@ impl Toolchain {
         }
     }
 
+    /// Returns `true` if this toolchain is GCC or Clang (Unix-like flag dialect).
     pub const fn is_unix_like(&self) -> bool {
         matches!(self, Toolchain::Gcc | Toolchain::Clang)
     }
@@ -172,7 +185,7 @@ impl Toolchain {
 
     /// The language-standard flag that guarantees a C99-compatible build for this toolchain.
     /// User-supplied flags that would change the standard dialect are stripped and this is
-    /// re-applied (see [`translate_user_flags`] so the generated output always compiles as C99.
+    /// re-applied (see [`translate_user_flags`]) so the generated output always compiles as C99.
     pub fn c99_standard_flag(&self) -> Option<&'static str> {
         match self {
             Toolchain::Gcc | Toolchain::Clang => Some("-std=c99"),
@@ -190,12 +203,20 @@ impl Toolchain {
     /// the toolchain's C99 standard flag is re-applied last. All other flags are
     /// normalized to the toolchain's spelling:
     ///
-    /// - GCC/Clang `->` MSVC: `-O2`/`-O1`/`-O0` -> `/O2`/`/O1`/`Od`,
-    ///   `-g` -> `/Zi`, `-I<x>` -> `/I<x>`, `-L<x>` -> `/LIBPATH:<x>`,
-    ///   `-l<x>` -> `<x>.lib`, `-Wall` -> `/W4`.
-    /// - MSVC `->` GCC/Clang: `/O2`/`/O1`/`/Od` -> `-O2`/`-O1`/`-O0`,
-    ///   `/Zi` -> `-g`, `/I<x>` -> `-I<x>`, `/LIBPATH:<x>` -> `-L<x>`,
-    ///   `<x>.lib` -> `-l<x>`, `/W4` -> `-Wall`.
+    /// - GCC/Clang `->` MSVC:
+    ///   * `-O2`/`-O1`/`-O0` -> `/O2`/`/O1`/`/Od`,
+    ///   * `-g` -> `/Zi`, `-I<x>` -> `/I<x>`,
+    ///   * `-L<x>` -> `/LIBPATH:<x>`,
+    ///   * `-l<x>` -> `<x>.lib`,
+    ///   * `-Wall` -> `/W4`.
+    ///
+    /// - MSVC `->` GCC/Clang:
+    ///   * `/O2`/`/O1`/`/Od` -> `-O2`/`-O1`/`-O0`,
+    ///   * `/Zi` -> `-g`
+    ///   * `/I<x>` -> `-I<x>`
+    ///   * `/LIBPATH:<x>` -> `-L<x>`,
+    ///   * `<x>.lib` -> `-l<x>`
+    ///   * `/W4` -> `-Wall`.
     ///
     /// Unknown flags are passed through unchanged. This keeps the CLI portable:
     /// a user can write `-O2 -g` regardless of whether the system compiler is
@@ -238,8 +259,8 @@ impl Toolchain {
             }
         }
 
-        // Guarantee C99 output by re-applying the standard flag last (so it wins
-        // over any user flag we may have normalized).
+        // Guarantee C99 output by re-applying the standard flag last (so it wins over any user
+        // flag we may have normalized).
         if let Some(std) = self.c99_standard_flag() {
             out.push(std.to_string());
         }
@@ -247,8 +268,8 @@ impl Toolchain {
     }
 }
 
-/// Map a single GCC/Clang-style flag to its MSVC equivalent. The input must
-/// already have its `-std=` flag stripped by the caller.
+/// Map a single GCC/Clang-style flag to its MSVC equivalent. The input must already have its
+/// `-std=` flag stripped by the caller.
 fn map_gnuc_to_msvc(flag: &str) -> String {
     match flag {
         "-O0" => "/Od".to_string(),
@@ -270,8 +291,8 @@ fn map_gnuc_to_msvc(flag: &str) -> String {
     }
 }
 
-/// Map a single MSVC-style flag to its GCC/Clang equivalent. The input must
-/// already have its `/std:` flag stripped by the caller.
+/// Map a single MSVC-style flag to its GCC/Clang equivalent. The input must already have its
+/// `/std:` flag stripped by the caller.
 fn map_msvc_to_gnuc(flag: &str) -> String {
     match flag {
         "/Od" => "-O0".to_string(),
@@ -306,6 +327,11 @@ fn resolve_cc_toolchain(path: &Path) -> Toolchain {
     detect_toolchain::<NoSearch>(path, None)
 }
 
+/// Configuration options for invoking the C compiler.
+///
+/// This builder-style struct collects all information needed to construct a compiler
+/// invocation: toolchain, source files, output path, include paths, library paths,
+/// user flags, and link libraries.
 #[derive(Debug, Clone)]
 pub struct CompilerOptions {
     pub toolchain: Toolchain,
@@ -325,6 +351,7 @@ pub struct CompilerOptions {
     pub user_lib_paths: Vec<PathBuf>,
 }
 
+/// Simple wrapper around a toolchain for type-safe construction of `CompilerOptions`.
 #[derive(Debug, Clone, Copy)]
 pub struct CompilerMeta(pub Toolchain);
 
@@ -443,21 +470,23 @@ impl CompilerOptions {
     /// - if `sources` is empty
     /// - if `output` is not set
     /// - if no system compiler can be found and no `compiler_path` was set
-    pub fn build_invocation(&self) -> CompileResult<(PathBuf, Vec<String>)> {
+    pub fn build_invocation(&self) -> Result<(PathBuf, Vec<String>), crate::error::Error> {
         if self.sources.is_empty() {
-            return Err(CompilationError::CompileError(
+            return Err(crate::error::Error::CompileError(
                 "no source files specified in CompilerOptions".into(),
             ));
         }
         let out = self.output.as_ref().ok_or_else(|| {
-            CompilationError::CompileError("output (target) path not set in CompilerOptions".into())
+            crate::error::Error::CompileError(
+                "output (target) path not set in CompilerOptions".into(),
+            )
         })?;
 
         let compiler_path = self
             .compiler_path
             .clone()
             .or_else(|| Toolchain::executable_path().map(|(_, p)| p))
-            .ok_or_else(|| CompilationError::CompileError("no system compiler found".into()))?;
+            .ok_or_else(|| crate::error::Error::CompileError("no system compiler found".into()))?;
 
         let mut args = Vec::new();
 

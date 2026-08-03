@@ -11,7 +11,6 @@ use pest::error::{InputLocation, LineColLocation};
 
 use crate::codegen::{
     ast::{Include, Program},
-    compiler::{CompilerMeta, CompilerOptions, Toolchain},
     inference::TypeInferencer,
     module::{ImportType, Module, ModuleImport, ModulePath, ModuleRegistry},
     parser::Parser as CodeParser,
@@ -20,6 +19,7 @@ use crate::codegen::{
 };
 use crate::error::{self, CompileResult};
 use crate::{KitParser, Rule, error::CompilationError};
+use kitc_common::{CompilerMeta, CompilerOptions, Toolchain};
 
 /// The Kit compiler, orchestrating module loading, type inference, and C code generation.
 pub struct Compiler {

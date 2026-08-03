@@ -115,6 +115,15 @@ Pass --libs <name> or use include "path" => "libname" in Kit to link libraries.
     Io(std::io::Error),
 }
 
+impl From<kitc_common::error::Error> for CompilationError {
+    fn from(err: kitc_common::error::Error) -> Self {
+        match err {
+            kitc_common::error::Error::CompileError(msg) => CompilationError::CompileError(msg),
+            kitc_common::error::Error::Io(e) => CompilationError::Io(e),
+        }
+    }
+}
+
 impl CompilationError {
     /// Wrap this error with source context (file, source text, and span) so the
     /// CLI can render a snippet. Returns the error unchanged if context is

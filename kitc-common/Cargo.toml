@@ -1,0 +1,13 @@
+[package]
+name = "kitc-common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+which = "8.0.5"
+winreg = { version = "0.10", optional = true }
+thiserror = "2.0.19"
+
+[features]
+default = []
+msvc = ["winreg"]

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use kitc_ffi::init_compiler_info;
 use kitlang::codegen::frontend::Compiler;
 use kitlang::error::CompilationError;
 use std::path::{Path, PathBuf};
@@ -56,6 +57,15 @@ enum Commands {
 
 fn main() -> Result<(), Error> {
     env_logger::init();
+
+    // Initialize compiler detection early to fail fast if no C compiler is available
+    if init_compiler_info().is_none() {
+        eprintln!(
+            "No C compiler found. Please install gcc, clang, or MSVC and ensure it's in PATH."
+        );
+        eprintln!("You can also set KITC_CC to specify a compiler explicitly.");
+        std::process::exit(1);
+    }
 
     // Destructure the Cli to get the `command` field
     let Cli { command } = Cli::parse();

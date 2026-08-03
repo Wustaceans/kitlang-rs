@@ -4,9 +4,6 @@
 /// Core AST data types: expressions, statements, functions, and programs.
 pub mod ast;
 
-/// C compiler toolchain detection and linker flag construction.
-pub mod compiler;
-
 /// Module system: paths, dependency graphs, registries, and name resolution.
 pub mod module;
 
@@ -22,7 +19,7 @@ pub use ast::{
     Block, Expr, ExprKind, Function, GlobalDecl, Include, Literal, MatchArm, MatchStmt, MetaArg,
     Metadata, Param, Program, Stmt, StmtKind,
 };
-pub use compiler::Toolchain;
+pub use kitc_common::Toolchain;
 pub use module::{
     DeclBinding, DeclKind, DependencyEdge, DependencyGraph, ImportType, Module, ModuleImport,
     ModuleNode, ModulePath, ModuleRegistry, NameBinding,

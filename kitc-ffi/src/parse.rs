@@ -537,13 +537,13 @@ fn extract_struct_from_type_def(node: &Node, source: &[u8]) -> Option<CStruct> {
 fn extract_union_from_type_def(node: &Node, source: &[u8]) -> Option<CUnion> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "union_specifier" {
-            if let Some(s) = parse_struct_specifier(&child, source) {
-                return Some(CUnion {
-                    name: s.name,
-                    fields: s.fields,
-                });
-            }
+        if child.kind() == "union_specifier"
+            && let Some(s) = parse_struct_specifier(&child, source)
+        {
+            return Some(CUnion {
+                name: s.name,
+                fields: s.fields,
+            });
         }
     }
     None
@@ -580,13 +580,13 @@ fn parse_field_declaration_list(node: &Node, source: &[u8]) -> Option<Vec<CField
     let mut cursor = node.walk();
     let mut fields = Vec::new();
     for child in node.children(&mut cursor) {
-        if child.kind() == "field_declaration" {
-            if let Some((name, ty)) = parse_field_declaration(&child, source) {
-                fields.push(CField {
-                    name: Some(name),
-                    ty,
-                });
-            }
+        if child.kind() == "field_declaration"
+            && let Some((name, ty)) = parse_field_declaration(&child, source)
+        {
+            fields.push(CField {
+                name: Some(name),
+                ty,
+            });
         }
     }
     if fields.is_empty() {
@@ -628,7 +628,7 @@ fn parse_field_declaration(node: &Node, source: &[u8]) -> Option<(String, CType)
 }
 
 /// Helper: get the text of a tree-sitter node.
-fn node_text<'a>(node: &Node, source: &'a [u8]) -> String {
+fn node_text(node: &Node, source: &[u8]) -> String {
     node.utf8_text(source).unwrap_or_default().to_string()
 }
 
@@ -652,10 +652,10 @@ fn find_declarator_child<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'t
         if k == kind {
             return Some(child);
         }
-        if k == "declarator" {
-            if let Some(found) = find_declarator_child(child, kind) {
-                return Some(found);
-            }
+        if k == "declarator"
+            && let Some(found) = find_declarator_child(child, kind)
+        {
+            return Some(found);
         }
     }
     None
@@ -718,10 +718,10 @@ fn parse_fn_ptr_params(node: &Node, source: &[u8]) -> Option<(String, Vec<CParam
     if let Some(inner_params) = find_child(&inner_fn, "parameter_list") {
         let mut c = inner_params.walk();
         for p in inner_params.children(&mut c) {
-            if p.kind() == "parameter_declaration" {
-                if let Some(param) = parse_non_void_param(&p, source) {
-                    params.push(param);
-                }
+            if p.kind() == "parameter_declaration"
+                && let Some(param) = parse_non_void_param(&p, source)
+            {
+                params.push(param);
             }
         }
     }

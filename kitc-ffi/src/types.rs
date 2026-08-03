@@ -3,65 +3,85 @@ use std::fmt;
 /// A C function signature extracted from a header.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CFunction {
+    /// Function name.
     pub name: String,
+    /// Return type.
     pub return_type: CType,
+    /// Parameter list.
     pub params: Vec<CParam>,
+    /// Whether the function is variadic (has `...`).
     pub is_variadic: bool,
 }
 
 /// A C function parameter.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CParam {
+    /// Parameter name (None for unnamed parameters).
     pub name: Option<String>,
+    /// Parameter type.
     pub ty: CType,
 }
 
 /// A C struct definition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CStruct {
+    /// Struct name (tag).
     pub name: String,
+    /// Struct fields.
     pub fields: Vec<CField>,
 }
 
 /// A C union definition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CUnion {
+    /// Union name (tag).
     pub name: String,
+    /// Union fields.
     pub fields: Vec<CField>,
 }
 
 /// A single field in a C struct or union.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CField {
+    /// Field name (None for unnamed/anonymous fields).
     pub name: Option<String>,
+    /// Field type.
     pub ty: CType,
 }
 
 /// A C enum definition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CEnum {
+    /// Enum name (tag).
     pub name: String,
+    /// Enum variants (constants).
     pub variants: Vec<CEnumVariant>,
 }
 
 /// A C enum variant (constant).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CEnumVariant {
+    /// Variant name.
     pub name: String,
+    /// Explicit value if specified, otherwise implicitly assigned.
     pub value: Option<i64>,
 }
 
 /// A C typedef (type alias).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CTypedef {
+    /// Typedef name (alias).
     pub name: String,
+    /// Underlying type.
     pub underlying: CType,
 }
 
 /// A C macro constant expression.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CMacroConstant {
+    /// Macro name.
     pub name: String,
+    /// Macro value.
     pub value: MacroValue,
 }
 
@@ -76,8 +96,11 @@ pub enum MacroValue {
 /// A C global variable declaration extracted from a header.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CGlobalVar {
+    /// Variable name.
     pub name: String,
+    /// Variable type.
     pub ty: CType,
+    /// Whether the variable is declared `const`.
     pub is_const: bool,
 }
 
@@ -221,16 +244,24 @@ impl fmt::Display for CQualifier {
 /// The collection of all declarations extracted from a C header.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CDeclarations {
+    /// Function prototypes.
     pub functions: Vec<CFunction>,
+    /// Struct definitions.
     pub structs: Vec<CStruct>,
+    /// Union definitions.
     pub unions: Vec<CUnion>,
+    /// Enum definitions.
     pub enums: Vec<CEnum>,
+    /// Typedefs (type aliases).
     pub typedefs: Vec<CTypedef>,
+    /// Macro constants.
     pub macro_constants: Vec<CMacroConstant>,
+    /// Global variable declarations.
     pub globals: Vec<CGlobalVar>,
 }
 
 impl CDeclarations {
+    /// Returns true if no declarations were extracted.
     pub fn is_empty(&self) -> bool {
         self.functions.is_empty()
             && self.structs.is_empty()

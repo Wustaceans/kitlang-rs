@@ -4,7 +4,7 @@
 /// AST types, module system, parser, code generation, and type infrastructure.
 pub mod codegen;
 
-pub use codegen::Toolchain;
+pub use kitc_common::Toolchain;
 
 /// The Kit language grammar, generated from a pest grammar file.
 #[derive(pest_derive::Parser)]

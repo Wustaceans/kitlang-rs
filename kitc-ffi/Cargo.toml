@@ -10,3 +10,11 @@ tree-sitter = "0.26.11"
 tree-sitter-c = "0.24.2"
 log = "0.4.33"
 thiserror = "2.0.19"
+which = "8.0.5"
+kitc-common = { path = "../kitc-common" }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.10"
+
+[features]
+default = []

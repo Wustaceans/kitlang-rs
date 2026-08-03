@@ -10,7 +10,7 @@ mod tests {
 
     #[test]
     fn test_parse_function_prototypes() {
-        let config = PreprocessConfig::new().with_fake_system_headers(true);
+        let config = PreprocessConfig::new().with_builtin_headers(true);
         let decls =
             extract_header_from_source(TEST_HEADER, &config).expect("Failed to parse test header");
 
@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_parse_structs() {
-        let config = PreprocessConfig::new().with_fake_system_headers(true);
+        let config = PreprocessConfig::new().with_builtin_headers(true);
         let decls =
             extract_header_from_source(TEST_HEADER, &config).expect("Failed to parse test header");
 
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn test_parse_enums() {
-        let config = PreprocessConfig::new().with_fake_system_headers(true);
+        let config = PreprocessConfig::new().with_builtin_headers(true);
         let decls =
             extract_header_from_source(TEST_HEADER, &config).expect("Failed to parse test header");
 
@@ -143,7 +143,7 @@ mod tests {
         let source = r#"
             size_t strlen(const char *s);
         "#;
-        let config = PreprocessConfig::new().with_fake_system_headers(false);
+        let config = PreprocessConfig::new().with_builtin_headers(false);
         let decls = extract_header_from_source(source, &config).unwrap();
         let func = &decls.functions[0];
         assert_eq!(func.name, "strlen");
@@ -163,7 +163,7 @@ mod tests {
             typedef unsigned long long uint64_t;
             typedef int myint;
         "#;
-        let config = PreprocessConfig::new().with_fake_system_headers(false);
+        let config = PreprocessConfig::new().with_builtin_headers(false);
         let decls = extract_header_from_source(source, &config).unwrap();
         assert_eq!(decls.typedefs.len(), 2);
         assert_eq!(decls.typedefs[0].name, "uint64_t");
