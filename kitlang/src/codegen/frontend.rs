@@ -724,11 +724,13 @@ impl Compiler {
         let mut cmd = Command::new(compiler_path);
         cmd.args(&args);
 
-        // MSVC's cl.exe requires the VS build environment (INCLUDE, LIB, PATH) even when invoked by absolute
-        // path from outside a developer prompt.
-        //
-        // Apply it so compilation and linking work without the user having run vcvarsall.bat first.
         if detected_toolchain.is_msvc() {
+            // cl.exe defaults object-file output to the CWD. Redirect `.obj` files into the
+            // build directory so they get cleaned up with the other intermediates.
+            cmd.arg(format!("/Fo{}/", self.build_dir.display()));
+
+            // MSVC's cl.exe requires the VS build environment (INCLUDE, LIB, PATH) even when
+            // invoked by absolute path from outside a developer prompt.
             let env = kitc_common::compiler_detect::get_compiler_environment(
                 detected_toolchain,
                 &detected_path,

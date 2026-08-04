@@ -793,11 +793,8 @@ fn cleanup_build_dir(build_dir: &PathBuf) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_intermediate = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e == "h" || e == "c");
-        if is_intermediate {
+        let ext = path.extension().and_then(|e| e.to_str());
+        if matches!(ext, Some("h" | "c" | "obj")) {
             let _ = fs::remove_file(&path);
         }
     }
