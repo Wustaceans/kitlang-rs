@@ -251,6 +251,7 @@ impl Toolchain {
             let is_gnu_style = flag.starts_with('-');
             if is_msvc && is_gnu_style {
                 // Compiler is MSVC but the flag is GCC/Clang-style: map it.
+                #[cfg(windows)]
                 out.push(crate::msvc::map_gnuc_to_msvc(flag));
             } else if is_unix && !is_gnu_style {
                 // Compiler is GCC/Clang but the flag is MSVC-style: map it.
