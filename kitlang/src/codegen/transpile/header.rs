@@ -184,6 +184,18 @@ impl CodegenCtx<'_> {
 
         for global in &prog.globals {
             if global.is_public || global.is_extern() {
+                let mod_path = global.mangling_module(&module.path);
+                let gname = mangle_name(&mod_path, &global.name);
+                // A const global whose initializer is not a valid C constant expression
+                // must be a macro rather than a `const` object (MSVC rejects the latter).
+                if global.is_const
+                    && let Some(init) = &global.init
+                    && !super::is_constant_initializer(init)
+                {
+                    let init_str = self.transpile_expr(init);
+                    let _ = writeln!(out, "#define {} ({})", gname, init_str);
+                    continue;
+                }
                 let ty = match self.inferencer.store.resolve(global.inferred) {
                     Ok(t) => self.type_to_c_name_with_module(&t, &module.path),
                     Err(_) => global
@@ -191,8 +203,6 @@ impl CodegenCtx<'_> {
                         .as_ref()
                         .map_or_else(|| "int".to_string(), |a| a.to_c_repr().name),
                 };
-                let mod_path = global.mangling_module(&module.path);
-                let gname = mangle_name(&mod_path, &global.name);
                 let const_ = if global.is_const { "const " } else { "" };
                 let _ = writeln!(out, "extern {const_}{ty} {};", gname);
             }

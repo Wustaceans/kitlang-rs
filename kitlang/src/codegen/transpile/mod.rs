@@ -39,6 +39,34 @@ macro_rules! is_unmangled_in_module {
     };
 }
 
+/// Returns `true` if `expr` is a compile-time constant expression that is a valid file-scope initializer
+/// in standard C.
+///
+/// Expressions that reference other globals or call functions are *not* constant expressions in C:
+/// ```c
+/// const int a = 42;
+/// const int b = a + 1;
+/// ```
+/// GCC/Clang accept this as an extension but MSVC rejects it.
+///
+/// Such const globals must instead be emitted as `#define` macros (see [`CodegenCtx::transpile_global`]).
+fn is_constant_initializer(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Literal { .. } => true,
+        ExprKind::UnaryOp { expr: inner, .. } => is_constant_initializer(inner),
+        ExprKind::BinaryOp { left, right, .. } => {
+            is_constant_initializer(left) && is_constant_initializer(right)
+        }
+        ExprKind::EnumVariant { .. } => true,
+        ExprKind::EnumInit { args, .. } => args.is_empty(),
+        ExprKind::ArrayLiteral { elements } => elements.iter().all(is_constant_initializer),
+        ExprKind::StructInit { fields, .. } => {
+            fields.iter().all(|f| is_constant_initializer(&f.value))
+        }
+        _ => false,
+    }
+}
+
 /// Walk all types referenced in a program and invoke `f` for each one.
 fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl FnMut(&Type)) {
     for s in &prog.structs {
@@ -191,6 +219,15 @@ impl CodegenCtx<'_> {
                     .join(", ");
 
                 format!("{extern_prefix}{const_prefix}{decl} = {{{elems}}};")
+            }
+            // A const global whose initializer is not a valid C const expr (e.g. it references another
+            // const global) cannot be declared as `const T x = <expr>;` in portable C.
+            //
+            // Emit it as a #define instead, matching the semantics of a compile-time constant to work
+            // around this limitation.
+            Some(expr) if global.is_const && !is_constant_initializer(expr) => {
+                let init_str = self.transpile_expr(expr);
+                format!("#define {global_name} ({init_str})")
             }
             Some(expr) => {
                 let init_str = self.transpile_expr(expr);

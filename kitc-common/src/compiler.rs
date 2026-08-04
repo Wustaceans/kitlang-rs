@@ -118,6 +118,13 @@ impl Toolchain {
             }
         }
 
+        // On Windows, MSVC's cl.exe is usually not on PATH (only the VS developer cmd adds it).
+        // Fall back to locating an installed MSVC via vswhere.
+        #[cfg(windows)]
+        if let Some(cl) = crate::msvc::find_msvc() {
+            return Some((Toolchain::Msvc, cl));
+        }
+
         // We didn't find any compiler on PATH
         None
     }
@@ -153,12 +160,12 @@ impl Toolchain {
         matches!(self, Toolchain::Gcc | Toolchain::Clang)
     }
 
-    /// Output flag used for the given toolchain (e.g. `-o` vs `/Fo`).
+    /// Output flag used for the given toolchain (e.g. `-o` vs `/Fe`).
     pub const fn output_flag(&self) -> &'static str {
         match self {
             Toolchain::Gcc | Toolchain::Clang => "-o",
             #[cfg(windows)]
-            Toolchain::Msvc => "/Fo",
+            Toolchain::Msvc => crate::msvc::output_flag(),
             Toolchain::Other => "-o",
         }
     }
@@ -174,9 +181,7 @@ impl Toolchain {
                 flags.iter().map(ToString::to_string).collect()
             }
             #[cfg(windows)]
-            Toolchain::Msvc => {
-                vec!["/std:c11".to_string(), "/W4".to_string()]
-            }
+            Toolchain::Msvc => crate::msvc::compiler_flags(),
             Toolchain::Other => {
                 vec![]
             }
@@ -190,7 +195,7 @@ impl Toolchain {
         match self {
             Toolchain::Gcc | Toolchain::Clang => Some("-std=c99"),
             #[cfg(windows)]
-            Toolchain::Msvc => Some("/std:c11"),
+            Toolchain::Msvc => crate::msvc::c99_standard_flag(),
             Toolchain::Other => None,
         }
     }
@@ -236,11 +241,7 @@ impl Toolchain {
             let is_std_flag = match self {
                 Toolchain::Gcc | Toolchain::Clang => flag.starts_with("-std="),
                 #[cfg(windows)]
-                Toolchain::Msvc => {
-                    flag.eq_ignore_ascii_case("/std:c11")
-                        || flag.eq_ignore_ascii_case("/std:c17")
-                        || flag.eq_ignore_ascii_case("/std:c99")
-                }
+                Toolchain::Msvc => crate::msvc::is_standard_flag(flag),
                 Toolchain::Other => false,
             };
             if is_std_flag {
@@ -250,7 +251,7 @@ impl Toolchain {
             let is_gnu_style = flag.starts_with('-');
             if is_msvc && is_gnu_style {
                 // Compiler is MSVC but the flag is GCC/Clang-style: map it.
-                out.push(map_gnuc_to_msvc(flag));
+                out.push(crate::msvc::map_gnuc_to_msvc(flag));
             } else if is_unix && !is_gnu_style {
                 // Compiler is GCC/Clang but the flag is MSVC-style: map it.
                 out.push(map_msvc_to_gnuc(flag));
@@ -265,29 +266,6 @@ impl Toolchain {
             out.push(std.to_string());
         }
         out
-    }
-}
-
-/// Map a single GCC/Clang-style flag to its MSVC equivalent. The input must already have its
-/// `-std=` flag stripped by the caller.
-fn map_gnuc_to_msvc(flag: &str) -> String {
-    match flag {
-        "-O0" => "/Od".to_string(),
-        "-O1" => "/O1".to_string(),
-        "-O2" | "-O3" | "-Os" => "/O2".to_string(),
-        "-g" => "/Zi".to_string(),
-        "-Wall" | "-Wextra" => "/W4".to_string(),
-        _ => {
-            if let Some(rest) = flag.strip_prefix("-I") {
-                format!("/I{rest}")
-            } else if let Some(rest) = flag.strip_prefix("-L") {
-                format!("/LIBPATH:{rest}")
-            } else if let Some(rest) = flag.strip_prefix("-l") {
-                format!("{rest}.lib")
-            } else {
-                flag.to_string()
-            }
-        }
     }
 }
 
@@ -383,7 +361,7 @@ impl CompilerOptions {
                 }
                 #[cfg(windows)]
                 Toolchain::Msvc => {
-                    self.link_opts.push(format!("{}.lib", lib.as_ref()));
+                    self.link_opts.push(crate::msvc::link_lib_arg(lib.as_ref()));
                 }
                 Toolchain::Other => {}
             }
@@ -404,7 +382,7 @@ impl CompilerOptions {
                 }
                 #[cfg(windows)]
                 Toolchain::Msvc => {
-                    self.link_opts.push(format!("/LIBPATH:{}", path.display()));
+                    self.link_opts.push(crate::msvc::lib_path_arg(&path));
                 }
                 Toolchain::Other => {}
             }
@@ -498,8 +476,19 @@ impl CompilerOptions {
             args.push(s.display().to_string());
         }
 
-        args.push(self.toolchain.output_flag().to_string());
-        args.push(out.display().to_string());
+        // Output: GCC/Clang take `-o <exe>`. MSVC's cl.exe must get `/Fe<exe>` as a single
+        // attached token to produce the executable (a detached `/Fe` followed by the path is
+        // misparsed by cl).
+        match self.toolchain {
+            Toolchain::Gcc | Toolchain::Clang | Toolchain::Other => {
+                args.push("-o".to_string());
+                args.push(out.display().to_string());
+            }
+            #[cfg(windows)]
+            Toolchain::Msvc => {
+                args.push(crate::msvc::output_arg(out));
+            }
+        }
 
         // Base C99 standard + warning flags, then any user-supplied flags (translated to this
         // toolchain and guarantees ANSI C99-compatible).
@@ -514,7 +503,7 @@ impl CompilerOptions {
             }
             #[cfg(windows)]
             Toolchain::Msvc => {
-                args.push("/LIBPATH:/usr/local/lib".to_string());
+                args.push(crate::msvc::default_lib_path_arg());
             }
             Toolchain::Other => {}
         }
@@ -525,7 +514,7 @@ impl CompilerOptions {
                 }
                 #[cfg(windows)]
                 Toolchain::Msvc => {
-                    args.push(format!("/LIBPATH:{}", p.display()));
+                    args.push(crate::msvc::lib_path_arg(p));
                 }
                 Toolchain::Other => {}
             }

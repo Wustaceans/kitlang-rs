@@ -9,9 +9,8 @@ use crate::compiler::Toolchain;
 /// Information about the detected C compiler, including its system include paths.
 ///
 /// This struct is populated at startup by [`init_compiler_info`] and cached globally.
-/// It contains the detected toolchain type, compiler executable path, system include
-/// directories, target triple (if cross-compiling), and a flag indicating whether
-/// cross-compilation is in effect.
+/// It contains the detected toolchain type, compiler executable path, system include directories,
+/// target triple (if cross-compiling), and a flag indicating whether cross-compilation is in effect.
 #[derive(Debug, Clone)]
 pub struct CompilerInfo {
     /// The detected compiler toolchain (GCC, Clang, MSVC, etc.).
@@ -20,6 +19,13 @@ pub struct CompilerInfo {
     pub compiler_path: PathBuf,
     /// System include directories discovered by querying the compiler.
     pub system_include_dirs: Vec<PathBuf>,
+    /// Extra environment variables that must be set when invoking this compiler.
+    ///
+    /// For MSVC this carries the Visual Studio build environment (`INCLUDE`, `LIB`, `PATH`, ...)
+    /// captured from `vcvarsall.bat`, since `cl.exe` cannot find headers or link without it.
+    ///
+    /// Empty for GCC/Clang.
+    pub env: HashMap<String, String>,
     /// Target triple if cross-compiling (e.g., "aarch64-linux-gnu").
     pub target_triple: Option<String>,
     /// True if the compiler targets a different architecture/OS than the host.
@@ -59,6 +65,32 @@ pub fn get_system_include_dirs() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Returns the extra environment variables that must be applied when invoking
+/// `compiler` with the given toolchain.
+///
+/// For GCC/Clang this is always empty. For MSVC it returns the Visual Studio
+/// build environment (`INCLUDE`, `LIB`, `PATH`, ...) captured at startup,
+/// falling back to capturing it on demand if the compiler wasn't initialized.
+pub fn get_compiler_environment(toolchain: Toolchain, _compiler: &Path) -> HashMap<String, String> {
+    if !toolchain.is_msvc() {
+        return HashMap::new();
+    }
+    // Prefer the env captured at startup if it matches
+    if let Some(info) = get_compiler_info()
+        && info.toolchain.is_msvc()
+    {
+        return info.env.clone();
+    }
+    #[cfg(windows)]
+    {
+        crate::msvc::msvc_environment()
+    }
+    #[cfg(not(windows))]
+    {
+        HashMap::new()
+    }
+}
+
 /// Detect the system compiler and query its include paths.
 fn detect_compiler() -> Option<CompilerInfo> {
     // 1. Check KITC_CC env var for explicit override
@@ -87,6 +119,15 @@ fn detect_compiler() -> Option<CompilerInfo> {
         }
     }
 
+    // 4. On Windows, MSVC's cl.exe is usually not on PATH (it's only added by the
+    //    Visual Studio developer cmd). Locate an installed MSVC via vswhere.
+    #[cfg(windows)]
+    if let Some(path) = crate::msvc::find_msvc()
+        && let Some(info) = try_compiler(&path)
+    {
+        return Some(info);
+    }
+
     // No compiler found
     eprintln!(
         "Error: No C compiler found. Please install gcc, clang, or MSVC and ensure it's in PATH."
@@ -111,9 +152,10 @@ fn try_compiler(path: &Path) -> Option<CompilerInfo> {
     let system_include_dirs = match toolchain {
         Toolchain::Gcc | Toolchain::Clang => query_gcc_like_includes(path),
         #[cfg(windows)]
-        Toolchain::Msvc => get_msvc_includes(),
+        Toolchain::Msvc => crate::msvc::get_includes(),
         Toolchain::Other => query_gcc_like_includes(path),
     };
+    let env = get_compiler_environment(toolchain, path);
 
     let target_triple = detect_target_triple(&toolchain, path);
     let is_cross_compiling = target_triple.as_ref().is_some_and(|t| {
@@ -126,6 +168,7 @@ fn try_compiler(path: &Path) -> Option<CompilerInfo> {
         toolchain,
         compiler_path: path.to_path_buf(),
         system_include_dirs,
+        env,
         target_triple,
         is_cross_compiling,
     })
@@ -196,133 +239,6 @@ fn parse_include_paths(stderr: &str) -> Vec<PathBuf> {
     }
 
     paths
-}
-
-#[cfg(windows)]
-fn get_msvc_includes() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    // 1. Check INCLUDE environment variable (set by vcvarsall.bat)
-    if let Ok(include) = env::var("INCLUDE") {
-        for dir in include.split(';') {
-            let dir = dir.trim();
-            if !dir.is_empty() {
-                paths.push(PathBuf::from(dir));
-            }
-        }
-    }
-
-    // 2. Try vswhere to find Visual Studio installation
-    if let Some(vs_paths) = find_vs_includes() {
-        paths.extend(vs_paths);
-    }
-
-    // 3. Check for Windows SDK paths
-    if let Some(sdk_paths) = find_windows_sdk_includes() {
-        paths.extend(sdk_paths);
-    }
-
-    paths
-}
-
-#[cfg(windows)]
-fn find_vs_includes() -> Option<Vec<PathBuf>> {
-    // Try vswhere.exe
-    let vswhere_path = find_vswhere()?;
-    let output = Command::new(vswhere_path)
-        .args([
-            "-latest",
-            "-products",
-            "*",
-            "-requires",
-            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-            "-property",
-            "installationPath",
-        ])
-        .output()
-        .ok()?;
-
-    let install_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if install_path.is_empty() {
-        return None;
-    }
-
-    let mut paths = Vec::new();
-
-    // VC++ tools include directory
-    let vc_tools = PathBuf::from(&install_path).join("VC/Tools/MSVC");
-    if let Ok(entries) = std::fs::read_dir(&vc_tools) {
-        let mut versions: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-        versions.sort_by(|a, b| b.file_name().cmp(&a.file_name())); // Latest first
-        if let Some(latest) = versions.first() {
-            paths.push(latest.path().join("include"));
-        }
-    }
-
-    Some(paths)
-}
-
-#[cfg(windows)]
-fn find_vswhere() -> Option<PathBuf> {
-    // Standard location
-    let standard =
-        PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
-    if standard.exists() {
-        return Some(standard);
-    }
-
-    // Check ProgramFiles(x86) env var
-    if let Ok(pf) = env::var("ProgramFiles(x86)") {
-        let path = PathBuf::from(pf).join("Microsoft Visual Studio/Installer/vswhere.exe");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    // Check ProgramFiles env var
-    if let Ok(pf) = env::var("ProgramFiles") {
-        let path = PathBuf::from(pf).join("Microsoft Visual Studio/Installer/vswhere.exe");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
-}
-
-#[cfg(windows)]
-fn find_windows_sdk_includes() -> Option<Vec<PathBuf>> {
-    let mut paths = Vec::new();
-
-    // Check Windows SDK environment variables
-    if let Ok(sdk_dir) = env::var("WindowsSdkDir") {
-        let sdk = PathBuf::from(sdk_dir);
-        paths.push(sdk.join("Include").join("ucrt"));
-        paths.push(sdk.join("Include").join("um"));
-        paths.push(sdk.join("Include").join("shared"));
-        paths.push(sdk.join("Include").join("winrt"));
-        paths.push(sdk.join("Include").join("cppwinrt"));
-    }
-
-    // Check for 10.0.* versioned SDK
-    if let Ok(program_files) = env::var("ProgramFiles(x86)") {
-        let sdk_root = PathBuf::from(program_files).join("Windows Kits/10/Include");
-        if sdk_root.exists() {
-            if let Ok(entries) = std::fs::read_dir(&sdk_root) {
-                let mut versions: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-                versions.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-                if let Some(latest) = versions.first() {
-                    paths.push(latest.path().join("ucrt"));
-                    paths.push(latest.path().join("um"));
-                    paths.push(latest.path().join("shared"));
-                    paths.push(latest.path().join("winrt"));
-                    paths.push(latest.path().join("cppwinrt"));
-                }
-            }
-        }
-    }
-
-    if paths.is_empty() { None } else { Some(paths) }
 }
 
 fn detect_target_triple(toolchain: &Toolchain, compiler: &Path) -> Option<String> {

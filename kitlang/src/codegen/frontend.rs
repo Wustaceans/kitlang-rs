@@ -710,7 +710,7 @@ impl Compiler {
         }
 
         let opts = CompilerOptions::new(CompilerMeta(detected_toolchain))
-            .compiler_path(detected_path)
+            .compiler_path(detected_path.clone())
             .link_libs(&self.libs)
             .user_cflags(&self.user_cflags)
             .user_lib_paths(&self.user_lib_paths)
@@ -721,10 +721,24 @@ impl Compiler {
 
         let (compiler_path, args) = opts.build_invocation()?;
 
-        let output = Command::new(compiler_path)
-            .args(&args)
-            .output()
-            .map_err(CompilationError::Io)?;
+        let mut cmd = Command::new(compiler_path);
+        cmd.args(&args);
+
+        // MSVC's cl.exe requires the VS build environment (INCLUDE, LIB, PATH) even when invoked by absolute
+        // path from outside a developer prompt.
+        //
+        // Apply it so compilation and linking work without the user having run vcvarsall.bat first.
+        if detected_toolchain.is_msvc() {
+            let env = kitc_common::compiler_detect::get_compiler_environment(
+                detected_toolchain,
+                &detected_path,
+            );
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+        }
+
+        let output = cmd.output().map_err(CompilationError::Io)?;
         let status = output.status;
 
         if !status.success() {

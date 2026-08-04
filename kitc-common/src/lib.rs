@@ -14,6 +14,9 @@ pub mod compiler;
 pub mod compiler_detect;
 pub mod error;
 
+#[cfg(windows)]
+pub mod msvc;
+
 pub use compiler::{CompilerMeta, CompilerOptions, Toolchain};
 pub use compiler_detect::{
     CompilerInfo, get_builtin_headers, get_compiler_info, get_system_include_dirs,
