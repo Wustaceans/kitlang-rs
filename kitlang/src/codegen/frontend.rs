@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Component as PathComponent, Path, PathBuf};
 use std::process::Command;
 use std::slice;
+use std::time::Instant;
 use walkdir::WalkDir;
 
 use pest::Parser;
@@ -14,6 +15,7 @@ use crate::codegen::{
     inference::TypeInferencer,
     module::{ImportType, Module, ModuleImport, ModulePath, ModuleRegistry},
     parser::Parser as CodeParser,
+    progress::Progress,
     transpile::{self, CodegenCtx},
     type_ast::UsingClause,
 };
@@ -627,8 +629,11 @@ impl Compiler {
     /// 3. Type inference on the merged program
     /// 4. Generate per-module `.c` and `.h` files
     /// 5. Invoke the system C compiler to link everything into an executable
-    pub fn compile(&mut self) -> CompileResult<()> {
+    pub fn compile(&mut self, progress: &dyn Progress) -> CompileResult<()> {
+        progress.stage("Loading modules");
+        let modules_start = Instant::now();
         let sorted_paths = self.build_module_graph()?;
+        progress.stage_done("Loading modules", modules_start.elapsed());
 
         // Set source context on the inferencer for error reporting.
         if let Some(first_file) = self.files.first()
@@ -638,7 +643,9 @@ impl Compiler {
                 .with_source(first_file.to_string_lossy().to_string(), source_text);
         }
 
-        // Step 1: Register C header declarations from all modules' include statements.
+        progress.stage("Processing C headers");
+        let headers_start = Instant::now();
+        // Register C header declarations from all modules' include statements.
         // This must happen BEFORE type inference so C function signatures are available.
         for module in self.registry.all_modules() {
             let source_path = module.source_path.clone();
@@ -656,12 +663,18 @@ impl Compiler {
                 )?;
             }
         }
+        progress.stage_done("Processing C headers", headers_start.elapsed());
 
-        // Step 2: Type inference on the merged program
+        progress.stage("Type checking");
+        let inference_start = Instant::now();
+        // Type inference on the merged program
         let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
         self.inferencer.infer_program(&mut merged)?;
+        progress.stage_done("Type checking", inference_start.elapsed());
 
-        // Step 3: Generate per-module C code
+        progress.stage("Generating C code");
+        let codegen_start = Instant::now();
+        // Generate per-module C code
         let mut ctx = CodegenCtx {
             inferencer: &self.inferencer,
             registry: &self.registry,
@@ -669,6 +682,7 @@ impl Compiler {
             build_dir: &self.build_dir,
         };
         let module_c_files = ctx.generate_per_module_files(&sorted_paths, &merged)?;
+        progress.stage_done("Generating C code", codegen_start.elapsed());
 
         // Collect linked library names from include statements
         for module in self.registry.all_modules() {
@@ -721,6 +735,8 @@ impl Compiler {
 
         let (compiler_path, args) = opts.build_invocation()?;
 
+        progress.stage("Compiling C");
+        let c_compile_start = Instant::now();
         let mut cmd = Command::new(compiler_path);
         cmd.args(&args);
 
@@ -746,6 +762,7 @@ impl Compiler {
         if !status.success() {
             return Err(CompilationError::CCompileError(output.stderr));
         }
+        progress.stage_done("Compiling C", c_compile_start.elapsed());
 
         transpile::cleanup_intermediate_files(&module_c_files, &self.build_dir);
 

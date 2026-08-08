@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use kitc_ffi::init_compiler_info;
+use kitlang::codegen::SimpleProgress;
 use kitlang::codegen::frontend::Compiler;
 use kitlang::error::CompilationError;
 use std::path::{Path, PathBuf};
@@ -7,6 +8,17 @@ use std::process::Command;
 use std::time;
 
 type Error = Box<dyn std::error::Error>;
+
+struct CompileOpts<'cfg> {
+    source: &'cfg Path,
+    source_paths: &'cfg [String],
+    libs: &'cfg [String],
+    cflags: &'cfg [String],
+    lib_paths: &'cfg [String],
+    cc: Option<&'cfg str>,
+    measure: bool,
+    quiet: bool,
+}
 
 #[derive(Parser)]
 #[command(name = "kitc", version, about = "Kit compiler")]
@@ -17,8 +29,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    // TODO: the compiler artifacts should be deleted as soon as the final C program has been
-    // successfully compiled. There should be a flag to disable this behavior.
     /// Compile a .kit file to an executable
     Compile {
         /// The `.kit` source file
@@ -33,7 +43,8 @@ enum Commands {
         libs: Vec<String>,
 
         /// Additional C compiler flags (e.g. "-O2 -g").
-        /// Translated to the target toolchain; output stays C99-compatible.
+        ///
+        /// The flags are translated to the target toolchain, but the output remains C99-compatible.
         #[arg(long)]
         cflags: Vec<String>,
 
@@ -42,16 +53,22 @@ enum Commands {
         lib_paths: Vec<String>,
 
         /// Override the C compiler executable to invoke.
-        #[arg(long = "cc")]
+        #[arg(long)]
         cc: Option<String>,
 
-        /// Compile and immediately run the executable
+        /// Compile and immediately run the executable.
+        ///
+        /// If the executable exits with a failure code (!= 0), `kitc` exits with the same code.
         #[arg(long)]
         run: bool,
 
         /// Print compilation timing information
         #[arg(long)]
         measure: bool,
+
+        /// Suppress progress output
+        #[arg(long)]
+        quiet: bool,
     },
 }
 
@@ -80,6 +97,7 @@ fn main() -> Result<(), Error> {
             cc,
             run,
             measure,
+            quiet,
         } => {
             if !source.exists() {
                 eprintln!(
@@ -89,15 +107,16 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-            let exe_path = match compile(
-                &source,
-                &source_paths,
-                &libs,
-                &cflags,
-                &lib_paths,
-                cc.as_deref(),
+            let exe_path = match compile(CompileOpts {
+                source: &source,
+                source_paths: &source_paths,
+                libs: &libs,
+                cflags: &cflags,
+                lib_paths: &lib_paths,
+                cc: cc.as_deref(),
                 measure,
-            ) {
+                quiet,
+            }) {
                 Ok(path) => path,
                 Err(e) => {
                     eprintln!("{}", e.render());
@@ -114,15 +133,18 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn compile(
-    source: &Path,
-    source_paths: &[String],
-    libs: &[String],
-    cflags: &[String],
-    lib_paths: &[String],
-    cc: Option<&str>,
-    measure: bool,
-) -> Result<PathBuf, CompilationError> {
+fn compile(opts: CompileOpts<'_>) -> Result<PathBuf, CompilationError> {
+    let CompileOpts {
+        source,
+        source_paths,
+        libs,
+        cflags,
+        lib_paths,
+        cc,
+        measure,
+        quiet,
+    } = opts;
+
     let init = time::Instant::now();
 
     let ext = if cfg!(windows) { "exe" } else { "" };
@@ -146,24 +168,29 @@ fn compile(
         cc.map(PathBuf::from),
     );
 
-    compiler.compile()?;
+    let progress = SimpleProgress::new(quiet, measure);
+    compiler.compile(&progress)?;
 
     if measure {
-        println!("→ Compiled in {}ms", init.elapsed().as_millis());
+        eprintln!("→ Compiled in {}ms", init.elapsed().as_millis());
     }
 
     Ok(exe_path)
 }
 
-// TODO: return the exit status from the compiler code, and return Err() if it failed, probably
-// adding an exit status (to exit with).
 fn run_executable(exe_path: &Path) -> Result<(), String> {
     let status = Command::new(exe_path)
         .status()
         .map_err(|e| format!("failed to launch executable: {e}"))?;
 
     if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+        let code = status.code();
+
+        if let Some(exit_code) = code {
+            eprintln!("'{}' exited with code: {}", exe_path.display(), exit_code);
+        }
+
+        std::process::exit(code.unwrap_or(1));
     }
     Ok(())
 }

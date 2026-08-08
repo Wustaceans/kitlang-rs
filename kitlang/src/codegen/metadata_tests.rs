@@ -9,6 +9,7 @@ use super::type_ast::{EnumDefinition, EnumVariant, StructDefinition};
 use super::types::TypeId;
 use crate::KitParser;
 use crate::Rule;
+use crate::codegen::NoOpProgress;
 use crate::error::CompilationError;
 use pest::Parser as PestParser;
 
@@ -567,7 +568,7 @@ fn test_extern_c_output_contains_extern_prefix() {
     );
 
     unsafe { env::set_var("KEEP_C", "1") };
-    compiler.compile().unwrap();
+    compiler.compile(&NoOpProgress).unwrap();
     unsafe { env::remove_var("KEEP_C") };
 
     let c_path = dir.join("test_extern_modules").join("test_extern.c");

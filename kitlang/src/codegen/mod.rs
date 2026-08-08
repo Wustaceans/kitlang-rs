@@ -32,6 +32,11 @@ pub use type_ast::{
 /// Compiler orchestration: module loading, graph building, and C compilation.
 pub mod frontend;
 
+/// Progress reporting trait and implementations.
+pub mod progress;
+
+pub use progress::{NoOpProgress, Progress, SimpleProgress};
+
 /// Hindley-Milner type inference engine.
 pub mod inference;
 
