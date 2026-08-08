@@ -36,6 +36,7 @@ Goal: lower a well-defined subset of Kit ("Kit Core") to portable C99.
   - [ ] `for x in iterable` via `kit.iterator` (iterator-based loops) — *planned*
 - [X] Function calls (named, indirect, and qualified cross-module)
 - [X] `return` / `break` / `continue`
+- [X] `defer` statements (scope-exit cleanup, LIFO ordering)
 - [X] `include` statements for C headers
 - [X] Interoperability with C functions (e.g. `printf`)
 - [X] `typedef` declarations
@@ -65,12 +66,10 @@ are tracked here so contributors know the gap between "parses" and "compiles".
 #### Explicitly unsupported (for now)
 
 These are features of the original Haskell compiler that are **not** on the
-near-term plan. Note that `defer` is also disabled in the upstream Kit compiler
-(`Parser.y` rule is commented out), so it is intentionally absent.
+near-term plan:
 
 - [ ] Generics / monomorphization
 - [ ] Term rewriting (rulesets)
-- [ ] `defer` (disabled upstream)
 - [ ] Pattern matching (`match`)
 - [ ] Implicits
 - [ ] Traits / vtables

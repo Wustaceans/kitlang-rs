@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.rs       text eol=lf
+*.expected text eol=lf
+*.kit      text eol=lf
+*.c        text eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf

@@ -1,0 +1,10 @@
+include "stdio.h";
+
+function main(): Int {
+    printf("Start of function\n");
+    defer printf("Cleanup: first registered, last executed\n");
+    printf("Middle of function\n");
+    defer printf("Cleanup: last registered, first executed\n");
+    printf("End of function\n");
+    return 0;
+}

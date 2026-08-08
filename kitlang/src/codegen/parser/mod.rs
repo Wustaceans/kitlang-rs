@@ -647,34 +647,57 @@ impl Parser {
             .into_inner()
             // grammar gives us a wrapper Rule::statement
             .filter(|p: &Pair<Rule>| p.as_rule() == Rule::statement)
-            .map(|stmt_pair: Pair<Rule>| {
-                let inner = stmt_pair.into_inner().next().ok_or_else(|| {
-                    parse_error!("statement wrapper is empty")
-                        .with_context(self.context_from_span(&parent_span))
-                })?;
-                match inner.as_rule() {
-                    Rule::var_decl => self.parse_var_decl(&inner),
-                    Rule::expr_stmt => self.parse_expr_stmt(inner),
-                    Rule::return_stmt => self.parse_return(inner),
-                    Rule::if_stmt => self.parse_if_stmt(inner),
-                    Rule::while_stmt => self.parse_while_stmt(inner),
-                    Rule::for_stmt => self.parse_for_stmt(inner),
-                    Rule::break_stmt => Ok(Stmt {
-                        kind: StmtKind::Break,
-                        span: Span::from_pest(&inner.as_span()),
-                    }),
-                    Rule::continue_stmt => Ok(Stmt {
-                        kind: StmtKind::Continue,
-                        span: Span::from_pest(&inner.as_span()),
-                    }),
-                    Rule::match_stmt => self.parse_match_stmt(inner),
-                    other => Err(CompilationError::ParseError(format!(
-                        "unexpected statement: {other:?}",
-                    ))),
-                }
-            })
+            .map(|stmt_pair: Pair<Rule>| self.parse_statement_pair(&stmt_pair, &parent_span))
             .collect::<Result<_, _>>()?;
         Ok(Block { stmts })
+    }
+
+    /// Parse a single `Rule::statement` wrapper into a `Stmt`.
+    fn parse_statement_pair(
+        &self,
+        stmt_pair: &Pair<Rule>,
+        parent_span: &pest::Span<'_>,
+    ) -> CompileResult<Stmt> {
+        let inner = stmt_pair.clone().into_inner().next().ok_or_else(|| {
+            parse_error!("statement wrapper is empty")
+                .with_context(self.context_from_span(parent_span))
+        })?;
+        match inner.as_rule() {
+            Rule::defer_stmt => self.parse_defer(inner),
+            Rule::var_decl => self.parse_var_decl(&inner),
+            Rule::expr_stmt => self.parse_expr_stmt(inner),
+            Rule::return_stmt => self.parse_return(inner),
+            Rule::if_stmt => self.parse_if_stmt(inner),
+            Rule::while_stmt => self.parse_while_stmt(inner),
+            Rule::for_stmt => self.parse_for_stmt(inner),
+            Rule::break_stmt => Ok(Stmt {
+                kind: StmtKind::Break,
+                span: Span::from_pest(&inner.as_span()),
+            }),
+            Rule::continue_stmt => Ok(Stmt {
+                kind: StmtKind::Continue,
+                span: Span::from_pest(&inner.as_span()),
+            }),
+            Rule::match_stmt => self.parse_match_stmt(inner),
+            other => Err(CompilationError::ParseError(format!(
+                "unexpected statement: {other:?}",
+            ))),
+        }
+    }
+
+    fn parse_defer(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+        let parent_span = pair.as_span();
+        // defer_stmt = { "defer" ~ statement }
+        let mut inner = pair.into_inner();
+        let body_pair = inner.next().ok_or_else(|| {
+            parse_error!("defer missing body").with_context(self.context_from_span(&parent_span))
+        })?;
+        debug_assert_eq!(body_pair.as_rule(), Rule::statement);
+        let body = Box::new(self.parse_statement_pair(&body_pair, &parent_span)?);
+        Ok(Stmt {
+            kind: StmtKind::Defer { body },
+            span: Span::from_pest(&parent_span),
+        })
     }
 
     fn parse_var_decl(&self, pair: &Pair<Rule>) -> CompileResult<Stmt> {

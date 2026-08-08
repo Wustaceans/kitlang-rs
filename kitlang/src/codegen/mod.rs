@@ -52,6 +52,9 @@ pub mod symbols;
 /// C code generation (transpilation) pass: Kit AST to C source.
 pub mod transpile;
 
+/// Defer expansion pass: lowers `Defer` statements into inline cleanup code.
+pub mod defer_expand;
+
 /// Type system representation and C type mapping.
 pub mod types;
 

@@ -195,6 +195,8 @@ pub enum StmtKind {
     Continue,
     /// Match statement (pattern matching).
     Match(MatchStmt),
+    /// Defer statement: schedules `body` to run when the enclosing scope exits.
+    Defer { body: Box<Stmt> },
 }
 
 impl Stmt {

@@ -67,14 +67,18 @@ fn is_constant_initializer(expr: &Expr) -> bool {
     }
 }
 
-/// Walk all types referenced in a program and invoke `f` for each one.
-fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl FnMut(&Type)) {
+/// Walk all types referenced in a program and invoke `visitor` for each one.
+fn visit_program_types<TypeVisitor: FnMut(&Type)>(
+    inferencer: &TypeInferencer,
+    prog: &Program,
+    mut visitor: TypeVisitor,
+) {
     for s in &prog.structs {
         for field in &s.fields {
             if let Ok(ty) = inferencer.store.resolve(field.ty) {
-                f(&ty);
+                visitor(&ty);
             } else if let Some(ref ann) = field.annotation {
-                f(ann);
+                visitor(ann);
             }
         }
     }
@@ -82,32 +86,32 @@ fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl 
         for v in &e.variants {
             for a in &v.args {
                 if let Ok(ty) = inferencer.store.resolve(a.ty) {
-                    f(&ty);
+                    visitor(&ty);
                 } else if let Some(ref ann) = a.annotation {
-                    f(ann);
+                    visitor(ann);
                 }
             }
         }
     }
     for g in &prog.globals {
         if let Ok(ty) = inferencer.store.resolve(g.inferred) {
-            f(&ty);
+            visitor(&ty);
         }
     }
     for func in &prog.functions {
         if let Some(id) = func.inferred_return {
             if let Ok(ty) = inferencer.store.resolve(id) {
-                f(&ty);
+                visitor(&ty);
             }
         } else if let Some(ref r) = func.return_type {
-            f(r);
+            visitor(r);
         }
 
         for p in &func.params {
             if let Ok(ty) = inferencer.store.resolve(p.ty) {
-                f(&ty);
+                visitor(&ty);
             } else if let Some(ref ann) = p.annotation {
-                f(ann);
+                visitor(ann);
             }
         }
 
@@ -118,13 +122,13 @@ fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl 
             } = stmt
                 && let Ok(ty) = inferencer.store.resolve(*inferred)
             {
-                f(&ty);
+                visitor(&ty);
             }
         }
     }
 
     for tdef in &prog.typedefs {
-        f(&tdef.type_def);
+        visitor(&tdef.type_def);
     }
 }
 
@@ -330,6 +334,11 @@ impl CodegenCtx<'_> {
             StmtKind::Match(m) => self.transpile_match_stmt(m),
             StmtKind::Break => "break;\n".to_string(),
             StmtKind::Continue => "continue;\n".to_string(),
+            StmtKind::Defer { .. } => {
+                // Defer statements should have been expanded by the defer_expand pass
+                // before reaching codegen. This is a compiler bug.
+                panic!("encountered unexpanded Defer statement in codegen");
+            }
         }
     }
 

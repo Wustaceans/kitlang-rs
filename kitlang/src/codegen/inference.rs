@@ -387,7 +387,11 @@ impl TypeInferencer {
             }
 
             StmtKind::Break | StmtKind::Continue => {
-                // No type inference needed
+                // No type inference needed - just control flow
+            }
+
+            StmtKind::Defer { body } => {
+                self.infer_stmt(body)?;
             }
         }
         Ok(())

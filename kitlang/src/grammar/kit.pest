@@ -30,6 +30,7 @@ base_type = { identifier ~ ("[" ~ type_annotation ~ ("," ~ type_annotation)* ~ "
 block = { "{" ~ (statement)* ~ "}" }
 
 statement = {
+    defer_stmt |
     var_decl |
     expr_stmt |
     return_stmt |
@@ -47,6 +48,8 @@ statement = {
     macro_call |
     rule_decl
 }
+
+defer_stmt = { "defer" ~ statement }
 
 var_decl = { metadata_and_modifiers ~ (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
 

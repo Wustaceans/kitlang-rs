@@ -411,6 +411,11 @@ fn test_compound_assign() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_defer_basic() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("defer", None)
+}
+
+#[test]
 fn test_escape_sequences() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("escape_sequences", None)
 }

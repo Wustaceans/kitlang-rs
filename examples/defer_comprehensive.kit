@@ -1,0 +1,48 @@
+include "stdio.h";
+
+function main(): Int {
+    // Test 1: Basic LIFO
+    printf("Test 1: Basic LIFO\n");
+    defer printf("  cleanup 3 (last)\n");
+    defer printf("  cleanup 2\n");
+    defer printf("  cleanup 1 (first)\n");
+
+    // Test 2: Defer with return
+    printf("\nTest 2: Defer with return\n");
+    defer printf("  outer cleanup\n");
+    if (true) {
+        defer printf("  if-scope cleanup\n");
+    }
+
+    // Test 3: Defer inside loop with break
+    printf("\nTest 3: Defer with break\n");
+    for i in 0...5 {
+        if (i == 3) {
+            printf("  breaking at 3\n");
+            defer printf("  loop-if cleanup\n");
+            break;
+        }
+    }
+
+    // Test 4: Defer inside loop with continue
+    printf("\nTest 4: Defer with continue\n");
+    for i in 0...5 {
+        if (i % 2 == 0) {
+            defer printf("  continue cleanup for %d\n", i);
+            continue;
+        }
+        printf("  odd: %d\n", i);
+    }
+
+    // Test 5: Nested if-else defers
+    printf("\nTest 5: Nested if-else\n");
+    defer printf("  outer before if\n");
+    if (true) {
+        defer printf("  then-branch cleanup\n");
+    } else {
+        defer printf("  else-branch cleanup\n");
+    }
+
+    printf("\nEnd of main\n");
+    return 0;
+}

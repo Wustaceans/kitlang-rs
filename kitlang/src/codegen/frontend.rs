@@ -672,6 +672,9 @@ impl Compiler {
         self.inferencer.infer_program(&mut merged)?;
         progress.stage_done("Type checking", inference_start.elapsed());
 
+        progress.stage("Expanding defer statements");
+        super::defer_expand::expand_defers(&mut merged);
+
         progress.stage("Generating C code");
         let codegen_start = Instant::now();
         // Generate per-module C code
