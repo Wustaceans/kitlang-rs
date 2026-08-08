@@ -64,6 +64,24 @@ fn expand_stmt(
             pending.push(*body);
         }
 
+        StmtKind::Block(block) => {
+            // A bare block is a scope boundary. Inherit this scope's pending defers so they run
+            // when the block exits (like if/match branches).
+            let mut block_run = inherited_run.to_vec();
+            block_run.extend_from_slice(pending);
+
+            let mut block_break = inherited_break.to_vec();
+            block_break.extend_from_slice(pending);
+
+            let mut new_block = block;
+            expand_block(&mut new_block, &block_run, &block_break);
+
+            output.push(Stmt {
+                kind: StmtKind::Block(new_block),
+                span: stmt.span,
+            });
+        }
+
         StmtKind::Return(_) => {
             // Run local pending defers (LIFO), then all inherited defers (LIFO), then return.
             output.extend(pending.drain(..).rev());

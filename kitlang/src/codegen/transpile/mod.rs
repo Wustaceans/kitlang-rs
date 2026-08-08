@@ -339,6 +339,7 @@ impl CodegenCtx<'_> {
                 // before reaching codegen. This is a compiler bug.
                 panic!("encountered unexpanded Defer statement in codegen");
             }
+            StmtKind::Block(block) => self.transpile_block(block),
         }
     }
 

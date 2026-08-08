@@ -416,6 +416,11 @@ fn test_defer_basic() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_defer_full() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("defer_full", None)
+}
+
+#[test]
 fn test_escape_sequences() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("escape_sequences", None)
 }

@@ -664,6 +664,30 @@ impl Parser {
         })?;
         match inner.as_rule() {
             Rule::defer_stmt => self.parse_defer(inner),
+            Rule::block_stmt => {
+                // The grammar wraps the inner `block` rule inside a `block_stmt` wrapper,
+                // which follows the same pattern as `defer_stmt` wrapping a `statement`.
+                //
+                // Unwrap it before delegating to `parse_block`, which expects a `Rule::body` pair
+                // containing `Rule::statement` children.
+                let block_pair = inner
+                    .clone()
+                    .into_inner()
+                    .next()
+                    .ok_or_else(|| {
+                        parse_error!("block_stmt wrapper is empty")
+                            .with_context(self.context_from_span(parent_span))
+                    })?;
+
+                debug_assert_eq!(block_pair.as_rule(), Rule::block);
+
+                let block = self.parse_block(block_pair)?;
+
+                Ok(Stmt {
+                    kind: StmtKind::Block(block),
+                    span: Span::from_pest(&inner.as_span()),
+                })
+            }
             Rule::var_decl => self.parse_var_decl(&inner),
             Rule::expr_stmt => self.parse_expr_stmt(inner),
             Rule::return_stmt => self.parse_return(inner),

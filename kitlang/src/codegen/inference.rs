@@ -393,6 +393,10 @@ impl TypeInferencer {
             StmtKind::Defer { body } => {
                 self.infer_stmt(body)?;
             }
+
+            StmtKind::Block(block) => {
+                self.infer_block(block)?;
+            }
         }
         Ok(())
     }

@@ -1,0 +1,49 @@
+basic-lifo:
+  first
+  second
+  third
+fallthrough:
+  body
+  cleanup
+return:
+  deferred
+return-value:
+  deferred
+  returned=42
+break:
+  i=0
+  i=1
+  break-deferred
+continue:
+  continue-deferred 0
+  odd=1
+  continue-deferred 2
+  odd=3
+  continue-deferred 4
+nested-scopes:
+  inner-C
+  middle-B
+  outer-A
+  returned=99
+bare-block:
+  inside-block
+  inner-block-cleanup
+  after-block
+bare-block-nested:
+  scope-3
+  scope-2
+  scope-1
+return-in-block:
+  inner-block-defer
+  block-defer
+  function-defer
+  returned=7
+break-in-while:
+  while-iter-1
+  while-iter-2
+  while-break
+  while-iter-2
+c-interop:
+  strlen=5
+  buf=world
+  c-cleanup

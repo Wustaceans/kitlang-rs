@@ -37,6 +37,7 @@ Goal: lower a well-defined subset of Kit ("Kit Core") to portable C99.
 - [X] Function calls (named, indirect, and qualified cross-module)
 - [X] `return` / `break` / `continue`
 - [X] `defer` statements (scope-exit cleanup, LIFO ordering)
+- [X] Bare blocks (`{ ... }`) for explicit scoping
 - [X] `include` statements for C headers
 - [X] Interoperability with C functions (e.g. `printf`)
 - [X] `typedef` declarations

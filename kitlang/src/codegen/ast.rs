@@ -197,6 +197,8 @@ pub enum StmtKind {
     Match(MatchStmt),
     /// Defer statement: schedules `body` to run when the enclosing scope exits.
     Defer { body: Box<Stmt> },
+    /// Bare block statement: creates an explicit lexical scope.
+    Block(Block),
 }
 
 impl Stmt {

@@ -1,0 +1,150 @@
+include "stdio.h";
+include "string.h";
+
+function test_basic_lifo() {
+    printf("basic-lifo:\n");
+    defer printf("  third\n");
+    defer printf("  second\n");
+    defer printf("  first\n");
+}
+
+function test_fallthrough() {
+    printf("fallthrough:\n");
+    defer printf("  cleanup\n");
+    printf("  body\n");
+}
+
+function test_return() {
+    printf("return:\n");
+    defer printf("  deferred\n");
+    return;
+}
+
+function test_return_value(): Int {
+    printf("return-value:\n");
+    defer printf("  deferred\n");
+    return 42;
+}
+
+function test_break() {
+    printf("break:\n");
+    for i in 0...5 {
+        var stop: Bool = i == 2;
+        if (stop) {
+            defer printf("  break-deferred\n");
+            break;
+        }
+        printf("  i=%d\n", i);
+    }
+}
+
+function test_continue() {
+    printf("continue:\n");
+    for i in 0...5 {
+        var skip: Bool = i % 2 == 0;
+        if (skip) {
+            defer printf("  continue-deferred %d\n", i);
+            continue;
+        }
+        printf("  odd=%d\n", i);
+    }
+}
+
+function test_nested_scopes(): Int {
+    printf("nested-scopes:\n");
+    var cond: Bool = true;
+    defer printf("  outer-A\n");
+    if (cond) {
+        defer printf("  middle-B\n");
+        if (cond) {
+            defer printf("  inner-C\n");
+            return 99;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+function test_bare_block() {
+    printf("bare-block:\n");
+    {
+        defer printf("  inner-block-cleanup\n");
+        printf("  inside-block\n");
+    }
+    printf("  after-block\n");
+}
+
+function test_bare_block_nested() {
+    printf("bare-block-nested:\n");
+    {
+        defer printf("  scope-1\n");
+        {
+            defer printf("  scope-2\n");
+            {
+                defer printf("  scope-3\n");
+            }
+        }
+    }
+}
+
+function test_return_in_block(): Int {
+    printf("return-in-block:\n");
+    defer printf("  function-defer\n");
+    {
+        defer printf("  block-defer\n");
+        {
+            defer printf("  inner-block-defer\n");
+            return 7;
+        }
+    }
+    return 0;
+}
+
+function test_break_in_while() {
+    printf("break-in-while:\n");
+    var count: Int = 0;
+    while (count < 5) {
+        var stop: Bool = count == 2;
+        defer printf("  while-iter-%d\n", count);
+        if (stop) {
+            defer printf("  while-break\n");
+            break;
+        }
+        count = count + 1;
+    }
+}
+
+function test_c_interop() {
+    printf("c-interop:\n");
+    defer printf("  c-cleanup\n");
+    var len: Int = strlen("hello");
+    printf("  strlen=%d\n", len);
+    var buf: CString = "world";
+    printf("  buf=%s\n", buf);
+}
+
+function main(): Int {
+    test_basic_lifo();
+    test_fallthrough();
+    test_return();
+
+    var r1: Int = test_return_value();
+    printf("  returned=%d\n", r1);
+
+    test_break();
+    test_continue();
+
+    var r2: Int = test_nested_scopes();
+    printf("  returned=%d\n", r2);
+
+    test_bare_block();
+    test_bare_block_nested();
+
+    var r3: Int = test_return_in_block();
+    printf("  returned=%d\n", r3);
+
+    test_break_in_while();
+    test_c_interop();
+
+    return 0;
+}

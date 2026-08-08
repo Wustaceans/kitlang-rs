@@ -31,6 +31,7 @@ block = { "{" ~ (statement)* ~ "}" }
 
 statement = {
     defer_stmt |
+    block_stmt |
     var_decl |
     expr_stmt |
     return_stmt |
@@ -50,6 +51,8 @@ statement = {
 }
 
 defer_stmt = { "defer" ~ statement }
+
+block_stmt = { block }
 
 var_decl = { metadata_and_modifiers ~ (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
 
@@ -177,7 +180,7 @@ char_literal = @{ "'" ~ ( "\\" ~ ANY | !"'" ~ ANY ) ~ "'" }
 string = @{ "\"" ~ ( "\\" ~ ANY | !"\"" ~ ANY )* ~ "\"" }
 
 identifier = @{
-    !("true" | "false" | "null" | "this" | "Self" | "break" | "continue")
+    !("true" | "false" | "null" | "this" | "Self" | "break" | "continue" | "return")
     ~ (ASCII_ALPHA | "_")
     ~ (ASCII_ALPHANUMERIC | "_")*
 }
