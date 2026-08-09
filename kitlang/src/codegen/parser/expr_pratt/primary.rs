@@ -5,7 +5,7 @@
 
 use crate::codegen::ast::{Expr, ExprKind, Literal};
 use crate::codegen::type_ast::FieldInit;
-use crate::codegen::types::{Type, TypeId};
+use crate::codegen::types::{Type, TypeId, UnaryOperator};
 use crate::lexer::Tok;
 
 use super::super::binding_power::postfix;
@@ -27,6 +27,24 @@ impl<'a> ExprParser<'a> {
                 Tok::Dot => self.parse_field_access(base)?,
                 Tok::LBracket => self.parse_index(base)?,
                 Tok::LParen => self.parse_call(base)?,
+                Tok::PlusPlus | Tok::MinusMinus => {
+                    let base_span = base.span.offset;
+                    let (_, tok_end) = self.token_abs(&self.peek().span);
+                    let op = if matches!(kind, Tok::PlusPlus) {
+                        UnaryOperator::PostIncrement
+                    } else {
+                        UnaryOperator::PostDecrement
+                    };
+                    self.advance();
+                    Expr {
+                        kind: ExprKind::UnaryOp {
+                            op,
+                            expr: Box::new(base),
+                        },
+                        ty: TypeId::default(),
+                        span: self.spanned(base_span, tok_end),
+                    }
+                }
                 _ => unreachable!("postfix returned Some for {kind:?}"),
             };
         }

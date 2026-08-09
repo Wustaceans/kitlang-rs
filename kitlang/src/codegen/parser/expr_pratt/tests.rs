@@ -800,26 +800,171 @@ fn indirect_call_is_parsed() {
     }
 }
 
-/// `x++` - postfix `++` is rejected (not supported in Kit).
+/// `x++` - postfix `++` parses to PostIncrement.
 #[test]
-fn postfix_increment_is_now_an_error() {
-    let err = parse_kit_expr("x++", "x++", 0).expect_err("should error on trailing ++");
-    let msg = err.to_human_message();
-    assert!(
-        msg.contains("PlusPlus") || msg.contains("end of expression"),
-        "msg: {msg}"
-    );
+fn postfix_increment_parses() {
+    let e = p("x++");
+    if let Expr {
+        kind:
+            ExprKind::UnaryOp {
+                op: UnaryOperator::PostIncrement,
+                expr,
+                ..
+            },
+        ..
+    } = &e
+    {
+        assert!(matches!(
+            expr.as_ref(),
+            Expr {
+                kind: ExprKind::Identifier { name, .. },
+                ..
+            } if name == "x"
+        ));
+    } else {
+        panic!("expected PostIncrement, got {e:?}");
+    }
 }
 
-/// `x--` - postfix `--` is rejected (not supported in Kit).
+/// `x--` - postfix `--` parses to PostDecrement.
 #[test]
-fn postfix_decrement_is_now_an_error() {
-    let err = parse_kit_expr("x--", "x--", 0).expect_err("should error on trailing --");
-    let msg = err.to_human_message();
-    assert!(
-        msg.contains("MinusMinus") || msg.contains("end of expression"),
-        "msg: {msg}"
-    );
+fn postfix_decrement_parses() {
+    let e = p("x--");
+    if let Expr {
+        kind:
+            ExprKind::UnaryOp {
+                op: UnaryOperator::PostDecrement,
+                expr,
+                ..
+            },
+        ..
+    } = &e
+    {
+        assert!(matches!(
+            expr.as_ref(),
+            Expr {
+                kind: ExprKind::Identifier { name, .. },
+                ..
+            } if name == "x"
+        ));
+    } else {
+        panic!("expected PostDecrement, got {e:?}");
+    }
+}
+
+/// `++x` - prefix `++` parses to PreIncrement.
+#[test]
+fn prefix_increment_parses() {
+    let e = p("++x");
+    if let Expr {
+        kind:
+            ExprKind::UnaryOp {
+                op: UnaryOperator::PreIncrement,
+                expr,
+                ..
+            },
+        ..
+    } = &e
+    {
+        assert!(matches!(
+            expr.as_ref(),
+            Expr {
+                kind: ExprKind::Identifier { name, .. },
+                ..
+            } if name == "x"
+        ));
+    } else {
+        panic!("expected PreIncrement, got {e:?}");
+    }
+}
+
+/// `--x` - prefix `--` parses to PreDecrement.
+#[test]
+fn prefix_decrement_parses() {
+    let e = p("--x");
+    if let Expr {
+        kind:
+            ExprKind::UnaryOp {
+                op: UnaryOperator::PreDecrement,
+                expr,
+                ..
+            },
+        ..
+    } = &e
+    {
+        assert!(matches!(
+            expr.as_ref(),
+            Expr {
+                kind: ExprKind::Identifier { name, .. },
+                ..
+            } if name == "x"
+        ));
+    } else {
+        panic!("expected PreDecrement, got {e:?}");
+    }
+}
+
+/// `++x + y` - prefix `++` binds tighter than addition.
+#[test]
+fn prefix_increment_precedence() {
+    let e = p("++x + y");
+    if let Expr {
+        kind:
+            ExprKind::BinaryOp {
+                op: BinaryOperator::Add,
+                left,
+                right,
+                ..
+            },
+        ..
+    } = &e
+    {
+        assert!(matches!(
+            left.as_ref(),
+            Expr {
+                kind: ExprKind::UnaryOp {
+                    op: UnaryOperator::PreIncrement,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            right.as_ref(),
+            Expr {
+                kind: ExprKind::Identifier { name, .. },
+                ..
+            } if name == "y"
+        ));
+    } else {
+        panic!("expected Add, got {e:?}");
+    }
+}
+
+/// `a[i]++` - postfix `++` applies to the result of array indexing.
+#[test]
+fn postfix_increment_after_index() {
+    let e = p("a[i]++");
+    if let Expr {
+        kind:
+            ExprKind::UnaryOp {
+                op: UnaryOperator::PostIncrement,
+                expr,
+                ..
+            },
+        ..
+    } = &e
+    {
+        assert!(matches!(
+            expr.as_ref(),
+            Expr {
+                kind: ExprKind::Index { .. },
+                ..
+            }
+        ));
+    } else {
+        panic!("expected PostIncrement, got {e:?}");
+    }
 }
 
 /// `sizeof(i32)` - `sizeof` keyword is rejected (not supported in Kit).

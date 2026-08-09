@@ -1,0 +1,20 @@
+Prefix increment:
+  ++a = 6
+  a after = 6
+Postfix increment:
+  b++ = 5
+  b after = 6
+Prefix decrement:
+  --c = 4
+  c after = 4
+Postfix decrement:
+  d-- = 5
+  d after = 4
+Increment in while loop:
+  i++ = 0
+  i++ = 1
+  i++ = 2
+Decrement in while loop:
+  --j = 2
+  --j = 1
+  --j = 0

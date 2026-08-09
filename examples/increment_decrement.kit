@@ -1,0 +1,35 @@
+include "stdio.h";
+
+function main() {
+    printf("Prefix increment:\n");
+    var a = 5;
+    printf("  ++a = %d\n", ++a);
+    printf("  a after = %d\n", a);
+
+    printf("Postfix increment:\n");
+    var b = 5;
+    printf("  b++ = %d\n", b++);
+    printf("  b after = %d\n", b);
+
+    printf("Prefix decrement:\n");
+    var c = 5;
+    printf("  --c = %d\n", --c);
+    printf("  c after = %d\n", c);
+
+    printf("Postfix decrement:\n");
+    var d = 5;
+    printf("  d-- = %d\n", d--);
+    printf("  d after = %d\n", d);
+
+    printf("Increment in while loop:\n");
+    var i = 0;
+    while i < 3 {
+        printf("  i++ = %d\n", i++);
+    }
+
+    printf("Decrement in while loop:\n");
+    var j = 3;
+    while j > 0 {
+        printf("  --j = %d\n", --j);
+    }
+}

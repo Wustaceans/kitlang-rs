@@ -644,7 +644,7 @@ impl BinaryOperator {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumString, IntoStaticStr)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, IntoStaticStr)]
 pub enum UnaryOperator {
     #[strum(serialize = "-")]
     Neg,
@@ -656,6 +656,14 @@ pub enum UnaryOperator {
     AddressOf,
     #[strum(serialize = "*")]
     Dereference,
+    #[strum(serialize = "++")]
+    PreIncrement,
+    #[strum(serialize = "++")]
+    PostIncrement,
+    #[strum(serialize = "--")]
+    PreDecrement,
+    #[strum(serialize = "--")]
+    PostDecrement,
 }
 
 impl UnaryOperator {

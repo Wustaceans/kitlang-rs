@@ -36,7 +36,7 @@ pub fn infix(tok: &Tok) -> Option<(u8, u8)> {
 /// Postfix binding power. All postfix ops use a single bp higher than any infix op.
 pub fn postfix(tok: &Tok) -> Option<u8> {
     match tok {
-        Tok::Dot | Tok::LBracket | Tok::LParen => Some(27),
+        Tok::Dot | Tok::LBracket | Tok::LParen | Tok::PlusPlus | Tok::MinusMinus => Some(27),
         _ => None,
     }
 }
@@ -44,7 +44,13 @@ pub fn postfix(tok: &Tok) -> Option<u8> {
 /// Prefix (unary) binding power. Returns None for non-prefix tokens.
 pub fn prefix(tok: &Tok) -> Option<u8> {
     match tok {
-        Tok::Bang | Tok::Minus | Tok::Star | Tok::Amp | Tok::Tilde => Some(25),
+        Tok::Bang
+        | Tok::Minus
+        | Tok::Star
+        | Tok::Amp
+        | Tok::Tilde
+        | Tok::PlusPlus
+        | Tok::MinusMinus => Some(25),
         _ => None,
     }
 }
@@ -105,6 +111,8 @@ pub fn tok_to_unary_op(tok: &Tok) -> Option<UnaryOperator> {
         Tok::Tilde => UnaryOperator::BitNot,
         Tok::Amp => UnaryOperator::AddressOf,
         Tok::Star => UnaryOperator::Dereference,
+        Tok::PlusPlus => UnaryOperator::PreIncrement,
+        Tok::MinusMinus => UnaryOperator::PreDecrement,
         _ => return None,
     })
 }

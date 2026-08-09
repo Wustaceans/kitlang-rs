@@ -14,7 +14,7 @@ use crate::codegen::module::{ModulePath, ModuleRegistry};
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
 use crate::codegen::parser::expr_pratt::callee_name;
 use crate::codegen::type_ast::FieldInit;
-use crate::codegen::types::{ToCRepr, Type, TypeId};
+use crate::codegen::types::{ToCRepr, Type, TypeId, UnaryOperator};
 
 use super::ast::Param;
 use super::inference::TypeInferencer;
@@ -726,7 +726,14 @@ impl CodegenCtx<'_> {
             }
             ExprKind::Call { callee, args } => self.transpile_call(callee, args),
             ExprKind::UnaryOp { op, expr: inner } => {
-                format!("{}({})", op.to_c_str(), self.transpile_expr(inner))
+                let inner = self.transpile_expr(inner);
+                match op {
+                    UnaryOperator::PreIncrement => format!("++{inner}"),
+                    UnaryOperator::PostIncrement => format!("{inner}++"),
+                    UnaryOperator::PreDecrement => format!("--{inner}"),
+                    UnaryOperator::PostDecrement => format!("{inner}--"),
+                    _ => format!("{}({inner})", op.to_c_str()),
+                }
             }
             ExprKind::BinaryOp { op, left, right } => {
                 let l = self.transpile_expr(left);
