@@ -1,426 +1,183 @@
-use assert_cmd::{Command as AssertCommand, cargo::*};
-use std::{path::Path, process::Command, sync::OnceLock};
+//! End-to-end compiler tests driven by the Kit fixture corpus in `examples/`.
+//!
+//! The individual `#[test]` functions are **generated at build time** by `kitc/build.rs` from the
+//! fixtures on disk (see `{OUT_DIR}/example_tests.rs`). Each fixture becomes its own test, so
+//! `cargo test` can filter per category:
+//!
+//! ```text
+//! cargo test -p kitc --test examples -- struct
+//! cargo test -p kitc --test examples -- range
+//! ```
+//!
+//! Fixture kinds (see `build.rs` for the discovery rules):
+//!
+//! * `RunCompare`: `*.kit` with a sibling `*.kit.expected`; compiled, run, stdout compared. Optional
+//!   stdin is read from a `<name>.kit.stdin` sidecar file.
+//! * `CompileFail`: `*.kit` under `examples/negative/`; must *fail* to compile.
 
-static LOGGER_INIT: OnceLock<()> = OnceLock::new();
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
+};
 
-fn setup_logging() {
-    LOGGER_INIT.get_or_init(|| {
-        env_logger::builder().is_test(true).init();
-    });
+/// The kinds of fixtures the generated tests exercise.
+#[derive(Clone, Copy)]
+enum FixtureKind {
+    RunCompare,
+    CompileFail,
 }
 
+fn exe_ext() -> &'static str {
+    if cfg!(windows) { "exe" } else { "" }
+}
+
+/// Normalize CRLF line endings so expected files are platform-independent.
 fn normalize_line_endings(s: &str) -> String {
     s.replace("\r\n", "\n")
 }
 
-const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
-
-fn run_example_test_with_source_path(
-    example_name: &str,
-    source_path: &str,
-    stdin: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    setup_logging();
-
-    let workspace_root = Path::new(MANIFEST_DIR)
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .ok_or("couldn't get workspace root")?;
+        .expect("kitc crate should be a member of the workspace")
+        .to_path_buf()
+}
 
-    let examples_dir = workspace_root.join("examples");
-    let example_file = examples_dir.join(format!("{example_name}.kit"));
-    let expected_file = examples_dir.join(format!("{example_name}.kit.expected"));
+/// Entry point invoked by every generated `#[test]` in `{OUT_DIR}/example_tests.rs`.
+fn run_fixture(
+    rel_path: &str,
+    stdin: Option<&str>,
+    kind: FixtureKind,
+    source_path: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let source_path_full = root.join("examples").join(rel_path);
 
     assert!(
-        example_file.exists(),
-        "example file {} does not exist",
-        example_file.display()
+        source_path_full.exists(),
+        "fixture {} does not exist",
+        source_path_full.display()
     );
 
-    assert!(
-        expected_file.exists(),
-        "expected file {} does not exist",
-        expected_file.display()
-    );
+    let kitc = env!("CARGO_BIN_EXE_kitc");
 
-    log::info!(
-        "Running example {} in {} (path: {})",
-        example_name,
-        workspace_root.display(),
-        example_file.display()
-    );
+    match kind {
+        FixtureKind::CompileFail => {
+            assert_compile_fails(kitc, &source_path_full, source_path, &root)
+        }
+        FixtureKind::RunCompare => {
+            let expected_path = source_path_full.with_extension("kit.expected");
+            run_and_compare(
+                kitc,
+                &source_path_full,
+                &expected_path,
+                stdin,
+                source_path,
+                &root,
+            )
+        }
+    }
+}
 
-    let source_path_full = workspace_root.join(example_file);
-    let ext = if cfg!(windows) { "exe" } else { "" };
-    let executable_path = source_path_full.with_extension(ext);
-
-    let kitc = cargo_bin!("kitc");
-    log::info!("kitc path: {}", kitc.display());
-
-    let mut cmd = AssertCommand::from_std(Command::new(kitc));
-    cmd.current_dir(workspace_root);
+fn compile(
+    kitc: &str,
+    source: &Path,
+    source_path: Option<&str>,
+    cwd: &Path,
+) -> Result<Output, Box<dyn Error>> {
+    let mut cmd = Command::new(kitc);
+    cmd.current_dir(cwd);
     cmd.arg("compile");
-    cmd.arg("--source-path");
-    cmd.arg(source_path);
-    cmd.arg(&source_path_full);
-    cmd.assert().success();
-
-    let mut compiled_cmd = AssertCommand::new(&executable_path);
-    if let Some(stdin_data) = stdin {
-        compiled_cmd.write_stdin(stdin_data);
+    if let Some(sp) = source_path {
+        cmd.arg("--source-path").arg(sp);
     }
-
-    let expected_output = std::fs::read_to_string(expected_file)?;
-    let expected_normalized = normalize_line_endings(&expected_output);
-
-    let output = compiled_cmd.assert().success().get_output().stdout.clone();
-    let actual = String::from_utf8_lossy(&output).replace("\r\n", "\n");
-    assert_eq!(
-        actual, expected_normalized,
-        "stdout did not match expected output"
-    );
-
-    if let Err(err) = std::fs::remove_file(&executable_path) {
-        log::error!("Failed to remove executable: {err}");
-    }
-
-    Ok(())
+    cmd.arg(source);
+    cmd.output().map_err(Into::into)
 }
 
-fn run_example_test(
-    example_name: &str,
+fn run_and_compare(
+    kitc: &str,
+    source: &Path,
+    expected_path: &Path,
     stdin: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    setup_logging();
-
-    let workspace_root = Path::new(MANIFEST_DIR)
-        .parent()
-        .ok_or("couldn't get workspace root")?;
-
-    let examples_dir = workspace_root.join("examples");
-    let example_file = examples_dir.join(format!("{example_name}.kit"));
-    let expected_file = examples_dir.join(format!("{example_name}.kit.expected"));
-
+    source_path: Option<&str>,
+    cwd: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let output = compile(kitc, source, source_path, cwd)?;
     assert!(
-        example_file.exists(),
-        "example file {} does not exist",
-        example_file.display()
+        output.status.success(),
+        "kitc failed to compile {}\n{}",
+        source.display(),
+        String::from_utf8_lossy(&output.stderr)
     );
 
-    assert!(
-        expected_file.exists(),
-        "expected file {} does not exist",
-        expected_file.display()
-    );
+    let exe_path = source.with_extension(exe_ext());
+    let run_output = run_executable(&exe_path, stdin)?;
+    // Remove the executable eagerly so a failing assertion below cannot leave it behind.
+    let _ = std::fs::remove_file(&exe_path);
 
-    log::info!(
-        "Running example {example_name} in {} (path: {}). Expected file is at {}",
-        workspace_root.display(),
-        example_file.display(),
-        expected_file.display()
-    );
-
-    let source_path = workspace_root.join(example_file);
-    let ext = if cfg!(windows) { "exe" } else { "" };
-    let executable_path = source_path.with_extension(ext);
-
-    // Compile the example
-    let kitc = cargo_bin!("kitc");
-    log::info!("kitc path: {}", kitc.display());
-
-    // Note: C file cleanup is handled by the compiler itself (see frontend.rs).
-    // SAFETY: these unit tests are single-threaded, so no race conditions
-    // unsafe {
-    //     std::env::set_var("KEEP_C", "");
-    // }
-    let mut cmd = AssertCommand::from_std(Command::new(kitc));
-
-    // Run from workspace root
-    cmd.current_dir(workspace_root);
-    cmd.arg("compile").arg(&source_path);
-    cmd.assert().success();
-
-    // Run the compiled executable
-    let mut compiled_cmd = AssertCommand::new(&executable_path);
-    if let Some(stdin_data) = stdin {
-        compiled_cmd.write_stdin(stdin_data);
-    }
-
-    let expected_output_path = workspace_root.join(expected_file);
-    log::info!("Expected output: {}", expected_output_path.display());
-    let expected_output = std::fs::read_to_string(expected_output_path)?;
-    let expected_normalized = normalize_line_endings(&expected_output);
-
-    // Run the compiled executable, capture output, normalize line endings, compare
-    let output = compiled_cmd.assert().success().get_output().stdout.clone();
-
-    let actual = String::from_utf8_lossy(&output).replace("\r\n", "\n");
+    let expected = normalize_line_endings(&std::fs::read_to_string(expected_path)?);
+    let actual = normalize_line_endings(&String::from_utf8_lossy(&run_output.stdout));
     assert_eq!(
-        actual, expected_normalized,
-        "stdout did not match expected output"
+        actual,
+        expected,
+        "stdout mismatch for {}. Expected:\n{}\n---\nActual:\n{}",
+        source.display(),
+        expected,
+        actual
     );
 
-    // Clean up generated files
-    if let Err(err) = std::fs::remove_file(&executable_path) {
-        log::error!("Failed to remove executable: {err}");
+    Ok(())
+}
+
+fn assert_compile_fails(
+    kitc: &str,
+    source: &Path,
+    source_path: Option<&str>,
+    cwd: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let output = compile(kitc, source, source_path, cwd)?;
+    assert!(
+        !output.status.success(),
+        "expected {} to fail compilation but it succeeded:\n{}",
+        source.display(),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    Ok(())
+}
+
+fn run_executable(exe: &Path, stdin: Option<&str>) -> Result<Output, Box<dyn Error>> {
+    let mut cmd = Command::new(exe);
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    cmd.stdout(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to launch executable {}: {e}", exe.display()))?;
+
+    if let Some(data) = stdin {
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .expect("stdin pipe requested")
+            .write_all(data.as_bytes())?;
     }
 
-    Ok(())
-}
-
-#[test]
-fn test_helloworld() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("helloworld", None)
-}
-
-#[test]
-fn test_bitwise_not() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("bitwise_not", None)
-}
-
-#[test]
-fn test_input() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("input", Some("42\n"))
-}
-
-#[test]
-fn test_if_else() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("if_else", None)
-}
-
-#[test]
-fn test_precedence() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("precedence", None)
-}
-
-#[test]
-fn test_basic_features() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("basic_features", None)
-}
-
-#[test]
-fn test_while_loop() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("while_loop", None)
-}
-
-#[test]
-fn test_for_loop() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("for_loop", None)
-}
-
-#[test]
-fn test_range_basic() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("range_for_simple", None)
-}
-
-#[test]
-fn test_range_variables() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("range_with_variables", None)
-}
-
-#[test]
-fn test_range_comprehensive() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("range_for_comprehensive", None)
-}
-
-#[test]
-fn test_range_edge_cases() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("range_edge_cases", None)
-}
-
-#[test]
-fn test_range_negative() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("test_negative_range", None)
-}
-
-#[test]
-fn test_simple_range() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("simple_range", None)
-}
-
-#[test]
-fn test_line_comments() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("line_comments", None)
-}
-
-#[test]
-fn test_block_comments() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("block_comments", None)
-}
-
-#[test]
-fn test_mixed_comments() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("mixed_comments", None)
-}
-
-#[test]
-fn test_inference() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("inference_test", None)
-}
-
-#[test]
-fn test_struct_definition() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("struct_definition", None)
-}
-
-#[test]
-fn test_struct_const_fields() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("struct_const_fields", None)
-}
-
-#[test]
-fn test_struct_initialization() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("struct_initialization", None)
-}
-
-#[test]
-fn test_struct_field_access() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("struct_field_access", None)
-}
-
-#[test]
-fn test_struct_partial_init() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("struct_partial_init", None)
-}
-
-#[test]
-fn test_enum_basic() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("enum_basic", None)
-}
-
-#[test]
-fn test_enum_defaults() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("enum_defaults", None)
-}
-
-#[test]
-fn test_enum_partial() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("enum_partial", None)
-}
-
-#[test]
-fn test_globals_basic() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("globals_basic", None)
-}
-
-#[test]
-fn test_globals_comprehensive() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("globals_comprehensive", None)
-}
-
-#[test]
-fn test_globals_test() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("globals_test", None)
-}
-
-#[test]
-fn test_nested_comments() -> Result<(), Box<dyn std::error::Error>> {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("couldn't get workspace root")?;
-
-    let examples_dir = workspace_root.join("examples");
-    let example_file = examples_dir.join("nested_comments.kit");
-
+    let output = child.wait_with_output()?;
     assert!(
-        example_file.exists(),
-        "example file {} does not exist",
-        example_file.display()
+        output.status.success(),
+        "{} exited with {}",
+        exe.display(),
+        output.status
     );
-
-    // This test should fail to compile due to nested block comments
-    let kitc = cargo_bin!("kitc");
-    let mut cmd = assert_cmd::Command::from_std(Command::new(kitc));
-    cmd.current_dir(workspace_root);
-    cmd.arg("compile").arg(&example_file);
-
-    let result = cmd.assert();
-    // Should fail to compile
-    assert!(result.try_success().is_err());
-
-    Ok(())
+    Ok(output)
 }
 
-#[test]
-fn test_multi_file_import() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test_with_source_path("multi_file_main", "examples", None)
-}
-
-#[test]
-fn test_module_basic_import() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test_with_source_path("module_test_main", "examples", None)
-}
-
-#[test]
-fn test_module_wildcard_import() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test_with_source_path("module_test_wild_main", "examples", None)
-}
-
-#[test]
-fn test_module_double_wildcard_import() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test_with_source_path("module_test_deep_main", "examples", None)
-}
-
-#[test]
-fn test_qualified_call() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test_with_source_path("qualified_call_main", "examples", None)
-}
-
-#[test]
-fn test_extern_demo() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("extern_demo", None)
-}
-
-#[test]
-fn test_char_literals() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("char_literals", None)
-}
-
-#[test]
-fn test_typedef() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("typedef_test", None)
-}
-
-#[test]
-fn test_array_literal() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("array_literal", None)
-}
-
-#[test]
-fn test_indirect_call() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("indirect_call", None)
-}
-
-#[test]
-fn test_enum_match() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("enum_match", None)
-}
-
-#[test]
-fn test_break_continue() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("break_continue", None)
-}
-
-#[test]
-fn test_arithmetic() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("arithmetic", None)
-}
-
-#[test]
-fn test_compound_assign() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("compound_assign", None)
-}
-
-#[test]
-fn test_defer_basic() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("defer", None)
-}
-
-#[test]
-fn test_defer_full() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("defer_full", None)
-}
-
-#[test]
-fn test_escape_sequences() -> Result<(), Box<dyn std::error::Error>> {
-    run_example_test("escape_sequences", None)
-}
+// The per-fixture tests are generated at build time from the `examples/` corpus.
+include!(concat!(env!("OUT_DIR"), "/example_tests.rs"));

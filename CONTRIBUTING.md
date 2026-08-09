@@ -104,6 +104,10 @@ We maintain a consistent code style and quality throughout the project:
 When implementing a new feature for the Kit language, please ensure you:
 
 1. Add minimal example code testing the new feature in the `examples/` directory.
+   * **Regular tests**: a `<name>.kit` *and* a sibling `<name>.kit.expected` (expected stdout) in the relevant category folder (`structs/`, `enums/`, etc.);
+   * Compile-fail cases go in `examples/negative/;
+
+   The tests are generated automatically by [`kitc/build.rs`](kitc/build.rs).
 2. Verify that your example compiles correctly using the `kitc` CLI tool.
 3. Add unit tests where feasible to make sure the feature works as expected and prevents regressions.
 
