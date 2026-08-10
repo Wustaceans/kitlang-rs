@@ -3,6 +3,10 @@ use tree_sitter::{Node, Parser};
 use super::error::{FfiError, FfiResult};
 use super::types::*;
 
+const ANONYMOUS_STRUCT: &str = "/* anonymous struct */";
+const ANONYMOUS_UNION: &str = "/* anonymous union */";
+const ANONYMOUS_ENUM: &str = "/* anonymous enum */";
+
 /// Parse a preprocessed C header string and extract declarations.
 pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
     let mut parser = Parser::new();
@@ -45,14 +49,19 @@ pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
                 }
             }
             "type_definition" => {
-                if let Some(td) = parse_typedef(&child, source_bytes) {
-                    decls.typedefs.push(td);
+                let typedef = parse_typedef(&child, source_bytes);
+                if let Some(td) = &typedef {
+                    decls.typedefs.push(td.clone());
                 }
+
                 // Also extract struct/union/enum definitions embedded in typedefs
-                if let Some(s) = extract_struct_from_type_def(&child, source_bytes) {
+                let alias = typedef.as_ref().map(|td| td.name.as_str());
+
+                if let Some(s) = extract_struct_from_type_def(&child, source_bytes, alias) {
                     decls.structs.push(s);
                 }
-                if let Some(u) = extract_union_from_type_def(&child, source_bytes) {
+
+                if let Some(u) = extract_union_from_type_def(&child, source_bytes, alias) {
                     decls.unions.push(u);
                 }
             }
@@ -337,30 +346,22 @@ fn parse_type_specifier(node: &Node, source: &[u8]) -> CType {
     }
 
     match node.kind() {
-        "struct_specifier" => {
+        "struct_specifier" | "union_specifier" | "enum_specifier" => {
             if let Some(name_node) = find_child(node, "type_identifier") {
                 let name = node_text(&name_node, source);
                 CType::Named(name)
             } else {
-                CType::Named("/* anonymous struct */".to_string())
+                // Anonymous structs/unions/enums are named by their surrounding typedef
+                let anon_name = match node.kind() {
+                    "struct_specifier" => ANONYMOUS_STRUCT,
+                    "union_specifier" => ANONYMOUS_UNION,
+                    "enum_specifier" => ANONYMOUS_ENUM,
+                    _ => unreachable!(),
+                };
+                CType::Named(anon_name.to_string())
             }
         }
-        "union_specifier" => {
-            if let Some(name_node) = find_child(node, "type_identifier") {
-                let name = node_text(&name_node, source);
-                CType::Named(name)
-            } else {
-                CType::Named("/* anonymous union */".to_string())
-            }
-        }
-        "enum_specifier" => {
-            if let Some(name_node) = find_child(node, "type_identifier") {
-                let name = node_text(&name_node, source);
-                CType::Named(name)
-            } else {
-                CType::Named("/* anonymous enum */".to_string())
-            }
-        }
+
         _ => CType::Named(text),
     }
 }
@@ -415,7 +416,14 @@ fn parse_typedef(node: &Node, source: &[u8]) -> Option<CTypedef> {
     }
 
     let alias = alias_name?;
-    let underlying = underlying_type.unwrap_or(CType::Int);
+    let underlying = match underlying_type.unwrap_or(CType::Int) {
+        CType::Named(name)
+            if name == ANONYMOUS_STRUCT || name == ANONYMOUS_UNION || name == ANONYMOUS_ENUM =>
+        {
+            CType::Named(alias.clone())
+        }
+        underlying => underlying,
+    };
 
     if alias == underlying.to_string() && matches!(underlying, CType::Int) {
         return None;
@@ -523,22 +531,30 @@ fn parse_init_declarator(
 }
 
 /// Extract a struct definition from inside a type_definition node (e.g. `typedef struct X { ... } X;`).
-fn extract_struct_from_type_def(node: &Node, source: &[u8]) -> Option<CStruct> {
+fn extract_struct_from_type_def(
+    node: &Node,
+    source: &[u8],
+    fallback_name: Option<&str>,
+) -> Option<CStruct> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "struct_specifier" {
-            return parse_struct_specifier(&child, source);
+            return parse_struct_specifier(&child, source, fallback_name);
         }
     }
     None
 }
 
 /// Extract a union definition from inside a type_definition node.
-fn extract_union_from_type_def(node: &Node, source: &[u8]) -> Option<CUnion> {
+fn extract_union_from_type_def(
+    node: &Node,
+    source: &[u8],
+    fallback_name: Option<&str>,
+) -> Option<CUnion> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "union_specifier"
-            && let Some(s) = parse_struct_specifier(&child, source)
+            && let Some(s) = parse_struct_specifier(&child, source, fallback_name)
         {
             return Some(CUnion {
                 name: s.name,
@@ -550,7 +566,11 @@ fn extract_union_from_type_def(node: &Node, source: &[u8]) -> Option<CUnion> {
 }
 
 /// Parse a struct_specifier node into a CStruct.
-fn parse_struct_specifier(node: &Node, source: &[u8]) -> Option<CStruct> {
+fn parse_struct_specifier(
+    node: &Node,
+    source: &[u8],
+    fallback_name: Option<&str>,
+) -> Option<CStruct> {
     let mut cursor = node.walk();
     let mut name = String::new();
     let mut fields: Vec<CField> = Vec::new();
@@ -570,7 +590,7 @@ fn parse_struct_specifier(node: &Node, source: &[u8]) -> Option<CStruct> {
     }
 
     if name.is_empty() {
-        return None;
+        name = fallback_name?.to_string();
     }
     Some(CStruct { name, fields })
 }

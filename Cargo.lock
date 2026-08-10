@@ -215,9 +215,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "includium"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24f4415224199a240e1122b5f0338f75464cc041bf8abf2cd6084fffd4df63b1"
+checksum = "4eb0a2d407be4c1dba77b98ec021445a43506819dbe710b02c970da1898c9873"
 
 [[package]]
 name = "indexmap"

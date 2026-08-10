@@ -181,7 +181,9 @@ impl CodegenCtx<'_> {
 
     fn type_to_c_name_with_module(&self, t: &Type, module: &ModulePath) -> String {
         if let Type::Named(name) = t {
-            if self.inferencer.is_struct_type(name) {
+            if self.inferencer.is_imported_struct(name) {
+                name.clone()
+            } else if self.inferencer.is_struct_type(name) {
                 format!("struct {}", mangle_name(module, name))
             } else {
                 mangle_name(module, name)

@@ -112,6 +112,7 @@ pub fn register_declarations(
 
         inferencer.store.new_known(struct_type);
         inferencer.symbols_mut().define_struct(struct_def);
+        inferencer.mark_imported_struct(s.name.clone());
     }
 
     // 3. Register union types (as structs with all fields)
@@ -149,6 +150,7 @@ pub fn register_declarations(
 
         inferencer.store.new_known(struct_type);
         inferencer.symbols_mut().define_struct(struct_def);
+        inferencer.mark_imported_struct(u.name.clone());
     }
 
     // 4. Register enum types

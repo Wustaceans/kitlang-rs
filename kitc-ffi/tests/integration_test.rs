@@ -169,4 +169,26 @@ mod tests {
         assert_eq!(decls.typedefs[0].name, "uint64_t");
         assert_eq!(decls.typedefs[1].name, "myint");
     }
+
+    #[test]
+    fn test_anonymous_struct_typedef_uses_alias_name() {
+        let source = r#"
+            typedef struct {
+                int quot;
+                int rem;
+            } div_t;
+            div_t div(int numer, int denom);
+        "#;
+        let config = PreprocessConfig::new().with_builtin_headers(false);
+        let decls = extract_header_from_source(source, &config).unwrap();
+
+        assert_eq!(decls.structs.len(), 1);
+        assert_eq!(decls.structs[0].name, "div_t");
+        assert_eq!(decls.structs[0].fields[0].name.as_deref(), Some("quot"));
+        assert_eq!(decls.structs[0].fields[1].name.as_deref(), Some("rem"));
+        assert_eq!(
+            decls.functions[0].return_type,
+            CType::Named("div_t".to_string())
+        );
+    }
 }

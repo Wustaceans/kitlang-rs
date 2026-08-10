@@ -16,6 +16,7 @@ use crate::type_err;
 pub struct TypeInferencer {
     pub store: TypeStore,
     symbols: SymbolTable,
+    imported_structs: HashSet<String>,
     current_return_type: Option<TypeId>,
     source_file: String,
     source_text: String,
@@ -27,6 +28,7 @@ impl TypeInferencer {
         Self {
             store: TypeStore::new(),
             symbols: SymbolTable::new(),
+            imported_structs: HashSet::new(),
             current_return_type: None,
             source_file: String::new(),
             source_text: String::new(),
@@ -72,6 +74,16 @@ impl TypeInferencer {
     /// Check if a type name refers to a struct
     pub fn is_struct_type(&self, name: &str) -> bool {
         self.symbols.lookup_struct(name).is_some()
+    }
+
+    /// Mark a struct name as supplied by an imported C header.
+    pub fn mark_imported_struct(&mut self, name: impl Into<String>) {
+        self.imported_structs.insert(name.into());
+    }
+
+    /// Check whether a struct name must retain its external C spelling.
+    pub fn is_imported_struct(&self, name: &str) -> bool {
+        self.imported_structs.contains(name)
     }
 
     /// Infer types for an entire program

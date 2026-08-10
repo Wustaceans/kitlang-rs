@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use includium::{PreprocessorConfig, PreprocessorDriver};
+use includium::{CStandard, PreprocessorConfig, PreprocessorDriver};
 
 use crate::error::{FfiError, FfiResult};
 use kitc_common::{get_builtin_headers, get_system_include_dirs};
@@ -146,7 +146,8 @@ fn preprocess_source(
         Target::Linux => PreprocessorConfig::for_linux(),
         Target::Windows => PreprocessorConfig::for_windows(),
         Target::MacOS => PreprocessorConfig::for_macos(),
-    };
+    }
+    .with_standard(CStandard::C99);
     pp.apply_config(&pp_config);
 
     // Define user-provided macros
