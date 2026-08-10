@@ -2,13 +2,14 @@ use std::path::Path;
 
 use kitc_common::get_builtin_headers;
 use kitc_ffi::types::*;
-use kitc_ffi::{PreprocessConfig, Target, extract_header, extract_header_from_source};
+use kitc_ffi::{PreprocessConfig, extract_header, extract_header_from_source};
 
 use super::inference::TypeInferencer;
 use super::type_ast::{EnumDefinition, EnumVariant, Field, StructDefinition};
 use super::types::{Type, TypeId};
 
-use crate::error::CompileResult;
+use crate::codegen::Include;
+use crate::error::{CompilationError, CompileResult};
 
 /// Register C header declarations into the Kit compiler's type system.
 ///
@@ -17,7 +18,7 @@ use crate::error::CompileResult;
 pub fn register_c_header(header_path: &str, inferencer: &mut TypeInferencer) -> CompileResult<()> {
     let config = PreprocessConfig::new()
         .with_builtin_headers(true)
-        .with_target(current_target());
+        .with_current_target();
     register_c_header_with_config(header_path, config, inferencer)
 }
 
@@ -28,10 +29,7 @@ pub fn register_c_header_with_config(
     inferencer: &mut TypeInferencer,
 ) -> CompileResult<()> {
     let decls = extract_header(header_path, &config).map_err(|e| {
-        crate::error::CompilationError::CompileError(format!(
-            "Failed to process C header '{}': {e}",
-            header_path
-        ))
+        CompilationError::CompileError(format!("Failed to process C header '{}': {e}", header_path))
     })?;
 
     register_declarations(decls, inferencer)
@@ -54,10 +52,10 @@ fn register_builtin_header(
 
     let config = PreprocessConfig::new()
         .with_builtin_headers(true)
-        .with_target(current_target());
+        .with_current_target();
 
     let decls = extract_header_from_source(content, &config).map_err(|e| {
-        crate::error::CompilationError::CompileError(format!(
+        CompilationError::CompileError(format!(
             "Failed to process builtin header '{}': {e}",
             header_name
         ))
@@ -312,22 +310,9 @@ fn ctype_to_kit(ct: &CType, decls: &CDeclarations) -> Type {
     }
 }
 
-/// Detect the current target platform.
-fn current_target() -> Target {
-    if cfg!(target_os = "linux") {
-        Target::Linux
-    } else if cfg!(target_os = "windows") {
-        Target::Windows
-    } else if cfg!(target_os = "macos") {
-        Target::MacOS
-    } else {
-        Target::Linux
-    }
-}
-
 /// Helper to register all includes from a module into the inferencer.
 pub fn register_module_includes(
-    includes: &[crate::codegen::Include],
+    includes: &[Include],
     source_path: &Path,
     inferencer: &mut TypeInferencer,
 ) -> CompileResult<()> {

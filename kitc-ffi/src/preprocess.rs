@@ -7,7 +7,7 @@ use crate::error::{FfiError, FfiResult};
 use kitc_common::{get_builtin_headers, get_system_include_dirs};
 
 /// Target platform for preprocessing, affects includium's built-in behavior.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Target {
     #[default]
     Linux,
@@ -15,33 +15,35 @@ pub enum Target {
     MacOS,
 }
 
-/// Configuration for the C preprocessor (includium).
+/// Configuration for includium.
 ///
-/// This struct controls how C headers are preprocessed before being parsed by
-/// tree-sitter-c. It includes system include paths, user include paths, predefined
-/// macros, and target platform settings.
+/// This struct controls how C headers are preprocessed before being parsed by tree-sitter-c. It
+/// includes system include paths, user include paths, predefined macros, and target platform
+/// settings.
 #[derive(Clone, Debug)]
 pub struct PreprocessConfig {
     /// System include directories (for `#include <...>`).
     ///
-    /// By default, these are auto-detected from the system compiler at startup
-    /// via [`kitc_common::get_system_include_dirs`]. Additional directories
-    /// can be added with [`add_system_include_dir`].
+    /// By default, these are auto-detected from the system compiler at startup via
+    /// [`kitc_common::get_system_include_dirs`]. Additional directories can be added with
+    /// [`add_system_include_dir`].
     pub system_include_dirs: Vec<String>,
+
     /// User include directories (for `#include "..."`).
     ///
-    /// These are searched after the header's own directory. Add with
-    /// [`add_user_include_dir`].
+    /// These are searched after the header's own directory. Add with [`add_user_include_dir`].
     pub user_include_dirs: Vec<String>,
+
     /// Additional predefined macros (`-DNAME=value`).
     pub predefined_macros: HashMap<String, String>,
+
     /// Whether to inject Kit's builtin minimal system headers (stddef.h, stdarg.h, etc.).
     ///
-    /// When `true` (default), the preprocessor will first try to resolve system
-    /// includes against Kit's embedded minimal headers before falling back to
-    /// system include directories. This allows parsing to succeed even when
-    /// system headers are not available.
+    /// When `true` (default), the preprocessor will first try to resolve system includes against
+    /// Kit's embedded minimal headers before falling back to system include directories. This
+    /// allows parsing to succeed even when system headers are not available.
     pub use_builtin_headers: bool,
+
     /// Target platform, affects includium's built-in predefined macros and behavior.
     pub target: Target,
 }
@@ -95,6 +97,18 @@ impl PreprocessConfig {
         self
     }
 
+    /// Sets the target platform to the host operating system.
+    pub fn with_current_target(mut self) -> Self {
+        self.target = if cfg!(target_os = "windows") {
+            Target::Windows
+        } else if cfg!(target_os = "macos") {
+            Target::MacOS
+        } else {
+            Target::Linux
+        };
+        self
+    }
+
     /// Enables or disables builtin header injection.
     ///
     /// When enabled (default), the preprocessor will first try to resolve
@@ -109,11 +123,12 @@ impl PreprocessConfig {
 
 /// Preprocess a C header file using includium.
 ///
-/// Reads the header from disk, runs it through the includium preprocessor with
-/// the given configuration (which resolves `#include` directives), and returns
-/// the fully preprocessed source text.
+/// Reads the header from disk, runs it through the includium preprocessor with the given
+/// configuration (which resolves `#include` directives), and returns the fully preprocessed source
+/// text.
 ///
 /// # Errors
+///
 /// Returns `FfiError::Io` if the header file cannot be read.
 pub fn preprocess_header(header_path: &Path, config: &PreprocessConfig) -> FfiResult<String> {
     let source = std::fs::read_to_string(header_path).map_err(FfiError::Io)?;
@@ -133,7 +148,7 @@ pub fn preprocess_source_from_string(source: &str, config: &PreprocessConfig) ->
     preprocess_source(source, "", config)
 }
 
-/// Internal: preprocess a source string with the given configuration.
+/// Preprocess a source string with the given configuration.
 fn preprocess_source(
     source: &str,
     header_dir: &str,
@@ -148,6 +163,7 @@ fn preprocess_source(
         Target::MacOS => PreprocessorConfig::for_macos(),
     }
     .with_standard(CStandard::C99);
+
     pp.apply_config(&pp_config);
 
     // Define user-provided macros
@@ -174,7 +190,7 @@ fn preprocess_source(
 
             // 2. Try system include directories
             for dir in &system_dirs {
-                let full_path = std::path::Path::new(dir).join(path);
+                let full_path = Path::new(dir).join(path);
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
                     return Some(content);
                 }
@@ -185,7 +201,7 @@ fn preprocess_source(
         }
         includium::IncludeKind::Local => {
             for dir in &user_dirs {
-                let full_path = std::path::Path::new(dir).join(path);
+                let full_path = Path::new(dir).join(path);
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
                     return Some(content);
                 }
