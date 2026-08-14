@@ -52,6 +52,9 @@ pub mod symbols;
 /// C code generation (transpilation) pass: Kit AST to C source.
 pub mod transpile;
 
+/// Shared deterministic hashing helpers for generated C identifiers.
+pub(crate) mod hash;
+
 /// Defer expansion pass: lowers `Defer` statements into inline cleanup code.
 pub mod defer_expand;
 

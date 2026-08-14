@@ -975,3 +975,74 @@ fn sizeof_is_not_supported() {
     let msg = err.to_human_message();
     assert!(msg.contains("Sizeof"), "msg: {msg}");
 }
+
+// --- Tuple literals ---
+
+/// `(1, 2)` - tuple literal with two elements parses to `ExprKind::TupleLit`.
+#[test]
+fn tuple_literal_two_elements() {
+    let e = p("(1, 2)");
+    if let Expr {
+        kind: ExprKind::TupleLit { elements },
+        ..
+    } = &e
+    {
+        assert_eq!(elements.len(), 2);
+        assert!(matches!(
+            elements[0],
+            Expr {
+                kind: ExprKind::Literal {
+                    value: Literal::Int(1),
+                    ..
+                },
+                ..
+            }
+        ));
+    } else {
+        panic!("expected TupleLit, got {e:?}");
+    }
+}
+
+/// `(1)` - a single parenthesized expression is grouping, not a tuple literal.
+#[test]
+fn single_paren_is_grouping() {
+    let e = p("(1)");
+    assert!(
+        matches!(
+            &e,
+            Expr {
+                kind: ExprKind::Literal {
+                    value: Literal::Int(1),
+                    ..
+                },
+                ..
+            }
+        ),
+        "expected grouped literal, got {e:?}"
+    );
+}
+
+/// `(a, b) = t` - the left-hand side of a destructuring assignment parses as a
+/// `TupleLit` of identifiers.
+#[test]
+fn destructuring_pattern_is_tuple_literal() {
+    let e = p("(a, b) = t");
+    if let Expr {
+        kind: ExprKind::Assign { left, .. },
+        ..
+    } = &e
+    {
+        assert!(
+            matches!(
+                left.as_ref(),
+                Expr {
+                    kind: ExprKind::TupleLit { .. },
+                    ..
+                }
+            ),
+            "expected TupleLit pattern, got {left:?}"
+        );
+    } else {
+        panic!("expected Assign, got {e:?}");
+    }
+}

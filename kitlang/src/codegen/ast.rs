@@ -314,6 +314,11 @@ pub enum ExprKind {
         /// The element elements.
         elements: Vec<Expr>,
     },
+    /// Tuple literal (e.g., `(1, "x", 2.0)`). Inferred type is `Tuple(element_types)`.
+    TupleLit {
+        /// The tuple element expressions, in positional order.
+        elements: Vec<Expr>,
+    },
     /// Array index access (e.g., `arr[i]`).
     Index {
         /// The container expression (array or pointer).

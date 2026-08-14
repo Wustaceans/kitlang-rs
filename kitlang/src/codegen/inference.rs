@@ -5,7 +5,9 @@ use super::ast::{
 };
 use super::symbols::{EnumVariantInfo, SymbolTable};
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
-use super::types::{BinaryOperator, Type, TypeId, TypeStore, UnaryOperator};
+use super::types::{
+    AssignmentOperator, BinaryOperator, Type, TypeId, TypeStore, UnaryOperator, tuple_c_name,
+};
 use super::{Field, TypeDef};
 use crate::codegen::parser::expr_pratt::callee_name;
 use crate::error::{CompilationError, CompileResult, ErrorContext, Span};
@@ -20,6 +22,13 @@ pub struct TypeInferencer {
     current_return_type: Option<TypeId>,
     source_file: String,
     source_text: String,
+    /// Distinct tuple shapes referenced in the program, collected so codegen can
+    /// emit one C struct definition per shape. Each entry is the generated C
+    /// struct name and its element types (recursively flattened for nesting).
+    tuple_shapes: Vec<(String, Vec<Type>)>,
+    /// Monotonic counter for synthesizing unique temporary identifiers
+    /// (e.g. tuple-destructure temporaries).
+    fresh_counter: u32,
 }
 
 impl TypeInferencer {
@@ -32,6 +41,38 @@ impl TypeInferencer {
             current_return_type: None,
             source_file: String::new(),
             source_text: String::new(),
+            tuple_shapes: Vec::new(),
+            fresh_counter: 0,
+        }
+    }
+
+    /// Borrow the distinct tuple shapes collected during inference.
+    pub fn tuple_shapes(&self) -> &[(String, Vec<Type>)] {
+        &self.tuple_shapes
+    }
+
+    /// Return a fresh, unique identifier name with the given prefix.
+    fn fresh_name(&mut self, prefix: &str) -> String {
+        let id = self.fresh_counter;
+        self.fresh_counter += 1;
+        format!("{prefix}{id}")
+    }
+
+    /// Record a tuple shape so its generated C struct is emitted exactly once.
+    ///
+    /// Recurses into nested tuple element types so nested shapes are also
+    /// captured. Duplicates (same generated name) are stored only once.
+    fn record_tuple(&mut self, elems: &[Type]) {
+        let name = tuple_c_name(elems);
+        if !self.tuple_shapes.iter().any(|(n, _)| n == &name) {
+            let mut flattened = Vec::new();
+            for e in elems {
+                if let Type::Tuple(inner) = e {
+                    self.record_tuple(inner);
+                }
+                flattened.push(e.clone());
+            }
+            self.tuple_shapes.push((name, flattened));
         }
     }
 
@@ -277,21 +318,58 @@ impl TypeInferencer {
     /// Infer types for a block of statements
     fn infer_block(&mut self, block: &mut Block) -> CompileResult<()> {
         self.symbols.push_scope();
-        for stmt in &mut block.stmts {
-            self.infer_stmt(stmt)?;
+        let mut i = 0;
+        while i < block.stmts.len() {
+            let mut replacements = self.infer_stmt(&mut block.stmts[i])?;
+            // Replace the current statement with the first replacement, then splice
+            // any extras (e.g. tuple-destructure bindings) immediately after it so
+            // they share the enclosing scope.
+            let first = replacements.remove(0);
+            block.stmts[i] = first;
+            // Insert any extras (e.g. tuple-destructure bindings) directly after
+            // the statement; they share the enclosing scope. Advancing by 1 lets
+            // the loop process those freshly-inserted statements next.
+            for (j, extra) in replacements.into_iter().enumerate() {
+                block.stmts.insert(i + 1 + j, extra);
+            }
+            i += 1;
         }
         self.symbols.pop_scope();
         Ok(())
     }
 
-    /// Infer types for a single statement
-    fn infer_stmt(&mut self, stmt: &mut Stmt) -> CompileResult<()> {
+    /// Infer types for a single statement. Returns the statement itself followed
+    /// by any additional statements produced by desugaring (e.g. tuple
+    /// destructuring splices extra `VarDecl`s into the enclosing scope).
+    fn infer_stmt(&mut self, stmt: &mut Stmt) -> CompileResult<Vec<Stmt>> {
         let span = stmt.span.clone();
-        let result = self.infer_stmt_inner(stmt);
-        self.wrap_err(result, Some(&span))
+        let extras = self.infer_stmt_inner(stmt);
+        let extras = self.wrap_err(extras, Some(&span))?;
+        let mut out = vec![stmt.clone()];
+        out.extend(extras);
+        Ok(out)
     }
 
-    fn infer_stmt_inner(&mut self, stmt: &mut Stmt) -> CompileResult<()> {
+    fn infer_stmt_inner(&mut self, stmt: &mut Stmt) -> CompileResult<Vec<Stmt>> {
+        // Tuple destructuring assignment (`(a, b, _) = expr;`) lowers to a sequence
+        // of `VarDecl`s that must live in the *enclosing* scope (so the bindings
+        // outlive this statement). We replace `stmt` with the first declaration
+        // (the RHS binding) and let the normal `VarDecl` arm below infer it, while
+        // `extra_decls` carries the remaining bindings to be spliced into the
+        // surrounding block by `infer_block`.
+        let mut extra_decls: Vec<Stmt> = Vec::new();
+        let is_destructure = matches!(
+            &stmt.kind,
+            StmtKind::Expr(Expr { kind: ExprKind::Assign { left, .. }, .. })
+                if matches!(left.kind, ExprKind::TupleLit { .. })
+        );
+        if is_destructure {
+            let mut decls = self.desugar_tuple_destructure(stmt)?;
+            let first = decls.remove(0);
+            stmt.kind = first.kind;
+            extra_decls = decls;
+        }
+
         match &mut stmt.kind {
             StmtKind::VarDecl {
                 name,
@@ -403,14 +481,30 @@ impl TypeInferencer {
             }
 
             StmtKind::Defer { body } => {
-                self.infer_stmt(body)?;
+                // `infer_stmt` desugars a tuple-destructuring body into several
+                // statements (a temp binding plus one per bound name). Keep them
+                // all inside the defer body (a synthesized block) so none of the
+                // bindings are silently dropped.
+                let mut pieces = self.infer_stmt(body)?;
+                if pieces.len() > 1 {
+                    let first = pieces.remove(0);
+                    for ex in &mut pieces {
+                        self.infer_stmt_inner(ex)?;
+                    }
+                    let mut all = vec![first];
+                    all.extend(pieces);
+                    **body = Stmt {
+                        kind: StmtKind::Block(Block { stmts: all }),
+                        span: body.span.clone(),
+                    };
+                }
             }
 
             StmtKind::Block(block) => {
                 self.infer_block(block)?;
             }
         }
-        Ok(())
+        Ok(extra_decls)
     }
 
     /// Infer types for a match statement.
@@ -533,6 +627,174 @@ impl TypeInferencer {
         self.wrap_err(result, Some(&span))
     }
 
+    /// Lower a tuple-destructuring assignment statement into a `Block` of `VarDecl`s.
+    ///
+    /// The RHS is bound once to a synthetic temporary; each bound pattern name
+    /// becomes a `VarDecl` initialized from `temp.__slotN` (nested tuples recurse).
+    fn desugar_tuple_destructure(&mut self, stmt: &Stmt) -> CompileResult<Vec<Stmt>> {
+        let (pattern, right) = match &stmt.kind {
+            StmtKind::Expr(e) => match &e.kind {
+                ExprKind::Assign { left, right, .. } => (left.clone(), right.clone()),
+                _ => unreachable!("desugar_tuple_destructure called on non-assign expr"),
+            },
+            _ => unreachable!("desugar_tuple_destructure called on non-expr stmt"),
+        };
+
+        let mut right_infer = *right.clone();
+        let right_ty_id = self.infer_expr(&mut right_infer)?;
+        let tuple_ty = self
+            .store
+            .resolve(right_ty_id)
+            .map_err(|e| type_err!("Failed to resolve tuple type: {e}"))?;
+
+        let elems = match &tuple_ty {
+            Type::Tuple(e) => e,
+            _ => {
+                return Err(type_err!(
+                    "Cannot destructure a non-tuple value of type {tuple_ty}"
+                ));
+            }
+        };
+
+        // Bind the RHS once so its evaluation is not duplicated across slots.
+        // (Scoping is handled by the caller splicing the resulting declarations
+        // into the enclosing block, so the bindings outlive this statement.)
+        let tmp = self.fresh_name("__kit_tuple_dest_");
+        let tmp_ty_id = self.store.new_known(tuple_ty.clone());
+
+        let mut decls: Vec<Stmt> = Vec::new();
+        decls.push(Stmt {
+            kind: StmtKind::VarDecl {
+                name: tmp.clone(),
+                annotation: Some(tuple_ty.clone()),
+                inferred: tmp_ty_id,
+                init: Some(right_infer),
+            },
+            span: stmt.span.clone(),
+        });
+
+        let base = Expr {
+            kind: ExprKind::Identifier { name: tmp.clone() },
+            ty: tmp_ty_id,
+            span: stmt.span.clone(),
+        };
+
+        match &pattern.kind {
+            ExprKind::TupleLit { elements: pats } => {
+                if pats.len() != elems.len() {
+                    return Err(type_err!(
+                        "Tuple destructuring arity mismatch: pattern has {} elements but value has {}",
+                        pats.len(),
+                        elems.len()
+                    ));
+                }
+                for (i, pat) in pats.iter().enumerate() {
+                    let slot = Expr {
+                        kind: ExprKind::Index {
+                            expr: Box::new(base.clone()),
+                            index: Box::new(Expr {
+                                kind: ExprKind::Literal {
+                                    value: Literal::Int(i as i64),
+                                },
+                                ty: TypeId::default(),
+                                span: stmt.span.clone(),
+                            }),
+                        },
+                        ty: TypeId::default(),
+                        span: stmt.span.clone(),
+                    };
+                    self.emit_destructure_pattern(pat, &slot, &elems[i], &mut decls)?;
+                }
+            }
+            _ => {
+                return Err(type_err!(
+                    "Tuple destructuring requires a tuple pattern on the left-hand side"
+                ));
+            }
+        }
+
+        Ok(decls)
+    }
+
+    /// Emit `VarDecl`s for one destructuring pattern element bound to `slot`.
+    /// `_` is skipped; identifiers become declarations; nested `TupleLit`s recurse.
+    fn emit_destructure_pattern(
+        &mut self,
+        pat: &Expr,
+        slot: &Expr,
+        elem_ty: &Type,
+        decls: &mut Vec<Stmt>,
+    ) -> CompileResult<()> {
+        match &pat.kind {
+            ExprKind::Identifier { name } if name == "_" => Ok(()),
+            ExprKind::Identifier { name } => {
+                if self.symbols.lookup_var(name).is_some() {
+                    // Reassignment to an already-declared variable: emit a plain
+                    // assignment instead of a fresh `VarDecl`, which would otherwise
+                    // shadow or (in the same scope) redefine the existing binding.
+                    let assign = Expr {
+                        kind: ExprKind::Assign {
+                            op: AssignmentOperator::Assign,
+                            left: Box::new(Expr {
+                                kind: ExprKind::Identifier { name: name.clone() },
+                                ty: TypeId::default(),
+                                span: slot.span.clone(),
+                            }),
+                            right: Box::new(slot.clone()),
+                        },
+                        ty: TypeId::default(),
+                        span: slot.span.clone(),
+                    };
+                    decls.push(Stmt {
+                        kind: StmtKind::Expr(assign),
+                        span: slot.span.clone(),
+                    });
+                } else {
+                    let elem_ty_id = self.store.new_known(elem_ty.clone());
+                    self.symbols.define_var(name, elem_ty_id);
+                    decls.push(Stmt {
+                        kind: StmtKind::VarDecl {
+                            name: name.clone(),
+                            annotation: Some(elem_ty.clone()),
+                            inferred: elem_ty_id,
+                            init: Some(slot.clone()),
+                        },
+                        span: slot.span.clone(),
+                    });
+                }
+                Ok(())
+            }
+            ExprKind::TupleLit { elements: subs } => {
+                let sub_elems = match elem_ty {
+                    Type::Tuple(e) => e,
+                    _ => return Err(type_err!("Cannot destructure a non-tuple pattern element")),
+                };
+                if subs.len() != sub_elems.len() {
+                    return Err(type_err!("Nested tuple destructuring arity mismatch"));
+                }
+                for (i, sub) in subs.iter().enumerate() {
+                    let nested = Expr {
+                        kind: ExprKind::Index {
+                            expr: Box::new(slot.clone()),
+                            index: Box::new(Expr {
+                                kind: ExprKind::Literal {
+                                    value: Literal::Int(i as i64),
+                                },
+                                ty: TypeId::default(),
+                                span: slot.span.clone(),
+                            }),
+                        },
+                        ty: TypeId::default(),
+                        span: slot.span.clone(),
+                    };
+                    self.emit_destructure_pattern(sub, &nested, &sub_elems[i], decls)?;
+                }
+                Ok(())
+            }
+            _ => Err(type_err!("Unsupported tuple destructuring pattern")),
+        }
+    }
+
     fn infer_expr_inner(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
         Ok(match &expr.kind {
             ExprKind::Identifier { .. } => self.infer_identifier(expr)?,
@@ -551,6 +813,7 @@ impl TypeInferencer {
             ExprKind::EnumVariant { .. } => self.infer_enum_variant(expr)?,
             ExprKind::EnumInit { .. } => self.infer_enum_init(expr)?,
             ExprKind::ArrayLiteral { .. } => self.infer_array_literal(expr)?,
+            ExprKind::TupleLit { .. } => self.infer_tuple_lit(expr)?,
             ExprKind::Index { .. } => self.infer_index(expr)?,
         })
     }
@@ -1193,6 +1456,42 @@ impl TypeInferencer {
         Ok(expr.ty)
     }
 
+    /// Infer type for a tuple literal (e.g., `(1, "x", 2.0)`).
+    /// Each element is inferred independently; the literal's type is the
+    /// positional `Tuple` of element types. The shape is recorded so codegen
+    /// emits a matching C struct.
+    fn infer_tuple_lit(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let ExprKind::TupleLit { elements } = &mut expr.kind else {
+            unreachable!("infer_tuple_lit called on non-TupleLit");
+        };
+
+        if elements.is_empty() {
+            return Err(type_err!(
+                "Empty tuple literal '()' is not supported; use at least two elements"
+            ));
+        }
+
+        let mut elem_type_ids = Vec::with_capacity(elements.len());
+        for elem in elements.iter_mut() {
+            elem_type_ids.push(self.infer_expr(elem)?);
+        }
+
+        let mut elem_types = Vec::with_capacity(elements.len());
+        for (elem, id) in elements.iter_mut().zip(elem_type_ids.iter()) {
+            let t = self
+                .store
+                .resolve(*id)
+                .map_err(|e| type_err!("Failed to resolve tuple element type: {e}"))?;
+            elem.ty = *id;
+            elem_types.push(t);
+        }
+
+        let tuple_ty = Type::Tuple(elem_types.clone());
+        self.record_tuple(&elem_types);
+        expr.ty = self.store.new_known(tuple_ty);
+        Ok(expr.ty)
+    }
+
     /// Infer type for an array index expression (e.g., `arr[i]`).
     /// Resolves the container to get the element type, and unifies the index with Int.
     fn infer_index(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
@@ -1204,21 +1503,47 @@ impl TypeInferencer {
             unreachable!("infer_index called on non-Index");
         };
         let container_ty = self.infer_expr(container)?;
-        let index_ty = self.infer_expr(index)?;
-
-        let int_ty = self.store.new_known(Type::Int);
-        self.unify(index_ty, int_ty)?;
-
         let resolved = self.store.resolve(container_ty)?;
-        let elem_ty = match resolved {
-            Type::CArray(elem_type, _) => self.store.new_known(*elem_type),
-            Type::Ptr(inner) => self.store.new_known(*inner),
-            _ => {
-                return Err(type_err!("Cannot index non-array type: {resolved}"));
+
+        match resolved {
+            Type::Tuple(elems) => {
+                // Tuple slot access: index must be an integer literal in range.
+                // (Runtime/non-literal indices are rejected, matching the
+                // Haskell compiler, because the slot is a struct member name.)
+                let ExprKind::Literal {
+                    value: Literal::Int(i),
+                } = &index.kind
+                else {
+                    return Err(type_err!(
+                        "Tuple elements can only be accessed with integer literal indices"
+                    ));
+                };
+                if *i < 0 || *i as usize >= elems.len() {
+                    return Err(type_err!(
+                        "Tuple index {i} out of range (tuple has {} elements)",
+                        elems.len()
+                    ));
+                }
+                let elem_ty = self.store.new_known(elems[*i as usize].clone());
+                expr.ty = elem_ty;
+                Ok(elem_ty)
             }
-        };
-        expr.ty = elem_ty;
-        Ok(elem_ty)
+            _ => {
+                let index_ty = self.infer_expr(index)?;
+                let int_ty = self.store.new_known(Type::Int);
+                self.unify(index_ty, int_ty)?;
+
+                let elem_ty = match resolved {
+                    Type::CArray(elem_type, _) => self.store.new_known(*elem_type),
+                    Type::Ptr(inner) => self.store.new_known(*inner),
+                    _ => {
+                        return Err(type_err!("Cannot index non-array type: {resolved}"));
+                    }
+                };
+                expr.ty = elem_ty;
+                Ok(elem_ty)
+            }
+        }
     }
 
     /// Resolve default arguments for enum variant constructors.

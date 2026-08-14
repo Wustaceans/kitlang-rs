@@ -1,4 +1,5 @@
 use crate::Rule;
+use crate::codegen::hash;
 use crate::error::{CompilationError, CompileResult};
 
 use pest::iterators::Pair;
@@ -532,8 +533,8 @@ impl ToCRepr for Type {
                     headers,
                 }
             }
-            Type::Tuple(_elements) => CRepr {
-                name: "/* tuple */ void*".to_string(),
+            Type::Tuple(elements) => CRepr {
+                name: tuple_c_name(elements),
                 declaration: None,
                 headers: HashSet::new(),
             },
@@ -582,6 +583,17 @@ fn simple_c_type(name: &str, headers: &[&str]) -> CRepr {
         declaration: None,
         headers: h,
     }
+}
+
+/// Deterministic C identifier for a tuple *shape*: `struct kit_tuple_<hash>`.
+///
+/// The suffix is a DJB2 hash over the arity-prefixed, `|`-joined C representations
+/// of the element types, so identical shapes share one generated struct across
+/// modules (the definition itself is emitted once, see `transpile/header.rs`).
+pub fn tuple_c_name(elements: &[Type]) -> String {
+    let signature: Vec<String> = elements.iter().map(|t| t.to_c_repr().name).collect();
+    let key = format!("{}|{}", elements.len(), signature.join("|"));
+    format!("struct kit_tuple_{}", hash::djb2_str(&key))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumString, IntoStaticStr)]

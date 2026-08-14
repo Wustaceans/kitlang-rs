@@ -4,12 +4,14 @@ mod match_pattern;
 
 use std::collections::HashSet;
 use std::env;
+use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
 use crate::codegen::ast::{
-    Attributed, Block, Expr, ExprKind, Function, GlobalDecl, Program, Stmt, StmtKind,
+    Attributed, Block, Expr, ExprKind, Function, GlobalDecl, Literal, Program, Stmt, StmtKind,
 };
+use crate::codegen::hash;
 use crate::codegen::module::{ModulePath, ModuleRegistry};
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
 use crate::codegen::parser::expr_pratt::callee_name;
@@ -227,9 +229,27 @@ impl CodegenCtx<'_> {
                 }
                 mangle_name(module, name)
             }
+        } else if let Type::Tuple(elems) = t {
+            self.tuple_struct_name(elems)
+        } else if let Type::Struct { name, .. } = t {
+            // Struct value type: emit the mangled struct tag so it matches both
+            // the struct definition and the `Type::Named` representation, which
+            // otherwise produce two different C names for the same type.
+            format!("struct {}", mangle_name(module, name))
         } else {
             t.to_c_repr().name
         }
+    }
+
+    /// Deterministic C struct name for a tuple shape.
+    ///
+    /// Built from the canonical C type names of the element types (so the name
+    /// matches wherever the tuple is referenced), hashed with the same DJB2
+    /// routine used for other generated identifiers.
+    fn tuple_struct_name(&self, elems: &[Type]) -> String {
+        let elem_names: Vec<String> = elems.iter().map(|e| self.type_to_c_name(e)).collect();
+        let key = format!("{}|{}", elems.len(), elem_names.join("|"));
+        format!("struct kit_tuple_{}", hash::djb2_str(&key))
     }
 
     /// Resolve a function's return type to its C name, defaulting to "int" for main and "void" otherwise.
@@ -239,8 +259,8 @@ impl CodegenCtx<'_> {
         }
         func.inferred_return
             .and_then(|id| self.inferencer.store.resolve(id).ok())
-            .map(|t| t.to_c_repr().name)
-            .or_else(|| func.return_type.as_ref().map(|t| t.to_c_repr().name))
+            .map(|t| self.type_to_c_name(&t))
+            .or_else(|| func.return_type.as_ref().map(|t| self.type_to_c_name(t)))
             .unwrap_or_else(|| "void".to_string())
     }
 
@@ -512,7 +532,12 @@ impl CodegenCtx<'_> {
             .store
             .resolve(p.ty)
             .map(|t| self.type_to_c_name_with_module(&t, module))
-            .or_else(|_| p.annotation.as_ref().map(|t| t.to_c_repr().name).ok_or(()))
+            .or_else(|_| {
+                p.annotation
+                    .as_ref()
+                    .map(|t| self.type_to_c_name(t))
+                    .ok_or(())
+            })
             .unwrap_or_else(|()| "void*".to_string())
     }
 
@@ -731,6 +756,325 @@ impl CodegenCtx<'_> {
         format!("(struct {mangled}){{{inits}}}")
     }
 
+    /// Transpile a tuple literal to a C compound literal.
+    ///
+    /// Each distinct tuple shape is backed by a generated `struct kit_tuple_*`
+    /// (see `collect_tuple_shapes`); the literal becomes
+    /// `(struct kit_tuple_xxx){ .__slot0 = e0, .__slot1 = e1, ... }`.
+    fn transpile_tuple_lit(&self, expr: &Expr) -> String {
+        let Some(Type::Tuple(elems)) = self.inferencer.store.resolve(expr.ty).ok().and_then(|t| {
+            if let Type::Tuple(_) = &t {
+                Some(t)
+            } else {
+                None
+            }
+        }) else {
+            unreachable!("tuple literal expr.ty did not resolve to a Tuple type");
+        };
+
+        let name = self.tuple_struct_name(&elems);
+        let inits = Self::elements_init(expr, self);
+        format!("({name}){{ {inits} }}", inits = inits.join(", "))
+    }
+
+    /// Gather every distinct tuple shape used by the program and emit the C struct
+    /// definitions into a single shared header (`kit_tuples.h`).
+    ///
+    /// Because the Rust backend emits per-module C files, defining each tuple
+    /// struct once (here) and including it everywhere avoids C redefinition
+    /// errors. Shapes come from both inference (recorded `tuple_shapes`) and a
+    /// fallback scan of annotations/expression types, so annotation-only tuple
+    /// types are still emitted.
+    pub(crate) fn generate_tuple_header(
+        &self,
+        inferencer: &crate::codegen::inference::TypeInferencer,
+        prog: &Program,
+    ) -> String {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut shapes: Vec<(String, Vec<Type>)> = Vec::new();
+
+        // Shapes recorded during inference.
+        for (_, elems) in inferencer.tuple_shapes() {
+            Self::record_tuple_shape(self, elems, &mut seen, &mut shapes);
+        }
+        // Fallback: annotations and expression types across the program.
+        Self::scan_program_tuples(prog, inferencer, &mut |ty| {
+            if let Type::Tuple(elems) = ty {
+                Self::record_tuple_shape(self, elems, &mut seen, &mut shapes);
+            }
+        });
+
+        let mut out = String::new();
+        let _ = writeln!(out, "#ifndef KIT_TUPLES_H");
+        let _ = writeln!(out, "#define KIT_TUPLES_H");
+        out.push('\n');
+
+        // Collect required system headers from element C representations.
+        let mut headers: HashSet<String> = HashSet::new();
+        for (_, elems) in &shapes {
+            for e in elems {
+                for h in e.to_c_repr().headers.iter() {
+                    headers.insert(h.clone());
+                }
+            }
+        }
+        let has_headers = !headers.is_empty();
+        for h in headers {
+            let _ = writeln!(out, "#include {h}");
+        }
+        if has_headers {
+            out.push('\n');
+        }
+
+        for (name, elems) in &shapes {
+            let _ = writeln!(out, "struct {} {{", name.trim_start_matches("struct "));
+            for (i, e) in elems.iter().enumerate() {
+                let _ = writeln!(out, "    {} __slot{i};", self.type_to_c_name(e));
+            }
+            let _ = writeln!(out, "}};\n");
+        }
+
+        let _ = writeln!(out, "#endif /* KIT_TUPLES_H */");
+        out
+    }
+
+    /// Build the `.__slotN = expr` initializer list for a tuple literal's elements.
+    fn elements_init(expr: &Expr, ctx: &CodegenCtx<'_>) -> Vec<String> {
+        let mut out = Vec::new();
+        if let ExprKind::TupleLit { elements } = &expr.kind {
+            for (i, e) in elements.iter().enumerate() {
+                out.push(format!(".__slot{i} = {}", ctx.transpile_expr(e)));
+            }
+        }
+        out
+    }
+
+    /// Record a tuple shape (deduplicated by generated struct name), recursing into
+    /// nested tuple element types so nested shapes are emitted too.
+    fn record_tuple_shape(
+        ctx: &CodegenCtx<'_>,
+        elems: &[Type],
+        seen: &mut HashSet<String>,
+        shapes: &mut Vec<(String, Vec<Type>)>,
+    ) {
+        let name = ctx.tuple_struct_name(elems);
+        if seen.insert(name.clone()) {
+            let mut flat = Vec::new();
+            for e in elems {
+                if let Type::Tuple(inner) = e {
+                    Self::record_tuple_shape(ctx, inner, seen, shapes);
+                }
+                flat.push(e.clone());
+            }
+            shapes.push((name, flat));
+        }
+    }
+
+    /// Recursively scan a program for tuple types, invoking `visit` for each found
+    /// `Type::Tuple` (including those reachable from expression types and annotations).
+    fn scan_program_tuples(
+        prog: &Program,
+        inferencer: &crate::codegen::inference::TypeInferencer,
+        visit: &mut dyn FnMut(&Type),
+    ) {
+        Self::scan_program_tuples_stmts(prog, inferencer, visit);
+    }
+
+    /// Walk all statements/expressions in the program to find tuple types.
+    fn scan_program_tuples_stmts(
+        prog: &Program,
+        inferencer: &crate::codegen::inference::TypeInferencer,
+        visit: &mut dyn FnMut(&Type),
+    ) {
+        fn walk_stmt(
+            stmt: &Stmt,
+            inferencer: &crate::codegen::inference::TypeInferencer,
+            visit: &mut dyn FnMut(&Type),
+        ) {
+            match &stmt.kind {
+                StmtKind::VarDecl {
+                    init, annotation, ..
+                } => {
+                    if let Some(Type::Tuple(e)) = annotation {
+                        visit(&Type::Tuple(e.clone()));
+                    }
+                    if let Some(init) = init {
+                        walk_expr(init, inferencer, visit);
+                    }
+                }
+                StmtKind::Expr(e) => walk_expr(e, inferencer, visit),
+                StmtKind::Return(Some(e)) => walk_expr(e, inferencer, visit),
+                StmtKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => {
+                    walk_expr(cond, inferencer, visit);
+                    walk_block(then_branch, inferencer, visit);
+                    if let Some(b) = else_branch {
+                        walk_block(b, inferencer, visit);
+                    }
+                }
+                StmtKind::While { cond, body } => {
+                    walk_expr(cond, inferencer, visit);
+                    walk_block(body, inferencer, visit);
+                }
+                StmtKind::For { iter, body, .. } => {
+                    walk_expr(iter, inferencer, visit);
+                    walk_block(body, inferencer, visit);
+                }
+                StmtKind::Match(m) => {
+                    walk_expr(&m.expr, inferencer, visit);
+                    for arm in &m.arms {
+                        walk_block(&arm.body, inferencer, visit);
+                    }
+                }
+                StmtKind::Block(b) => walk_block(b, inferencer, visit),
+                _ => {}
+            }
+        }
+
+        fn walk_block(
+            block: &Block,
+            inferencer: &crate::codegen::inference::TypeInferencer,
+            visit: &mut dyn FnMut(&Type),
+        ) {
+            for s in &block.stmts {
+                walk_stmt(s, inferencer, visit);
+            }
+        }
+
+        fn walk_expr(
+            expr: &Expr,
+            inferencer: &crate::codegen::inference::TypeInferencer,
+            visit: &mut dyn FnMut(&Type),
+        ) {
+            if let Ok(t) = inferencer.store.resolve(expr.ty) {
+                visit(&t);
+            }
+            match &expr.kind {
+                ExprKind::Literal { .. }
+                | ExprKind::Identifier { .. }
+                | ExprKind::EnumVariant { .. } => {}
+                ExprKind::Call { callee, args } => {
+                    walk_expr(callee, inferencer, visit);
+                    for a in args {
+                        walk_expr(a, inferencer, visit);
+                    }
+                }
+                ExprKind::UnaryOp { expr, .. } => walk_expr(expr, inferencer, visit),
+                ExprKind::BinaryOp { left, right, .. } => {
+                    walk_expr(left, inferencer, visit);
+                    walk_expr(right, inferencer, visit);
+                }
+                ExprKind::Assign { left, right, .. } => {
+                    walk_expr(left, inferencer, visit);
+                    walk_expr(right, inferencer, visit);
+                }
+                ExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => {
+                    walk_expr(cond, inferencer, visit);
+                    walk_expr(then_branch, inferencer, visit);
+                    walk_expr(else_branch, inferencer, visit);
+                }
+                ExprKind::RangeLiteral { start, end } => {
+                    walk_expr(start, inferencer, visit);
+                    walk_expr(end, inferencer, visit);
+                }
+                ExprKind::StructInit { fields, .. } => {
+                    for f in fields {
+                        walk_expr(&f.value, inferencer, visit);
+                    }
+                }
+                ExprKind::FieldAccess { expr, .. } => walk_expr(expr, inferencer, visit),
+                ExprKind::Index { expr, index } => {
+                    walk_expr(expr, inferencer, visit);
+                    walk_expr(index, inferencer, visit);
+                }
+                ExprKind::EnumInit { args, .. } => {
+                    for a in args {
+                        walk_expr(a, inferencer, visit);
+                    }
+                }
+                ExprKind::ArrayLiteral { elements, .. } => {
+                    for e in elements {
+                        walk_expr(e, inferencer, visit);
+                    }
+                }
+                ExprKind::TupleLit { elements } => {
+                    for e in elements {
+                        walk_expr(e, inferencer, visit);
+                    }
+                }
+            }
+        }
+
+        for f in &prog.functions {
+            walk_block(&f.body, inferencer, visit);
+            for p in &f.params {
+                if let Some(Type::Tuple(e)) = &p.annotation {
+                    visit(&Type::Tuple(e.clone()));
+                }
+            }
+            if let Some(Type::Tuple(e)) = &f.return_type {
+                visit(&Type::Tuple(e.clone()));
+            }
+        }
+        for g in &prog.globals {
+            if let Some(init) = &g.init {
+                walk_expr(init, inferencer, visit);
+            }
+            if let Some(Type::Tuple(e)) = &g.annotation {
+                visit(&Type::Tuple(e.clone()));
+            }
+        }
+        for s in &prog.structs {
+            for f in &s.fields {
+                if let Some(Type::Tuple(e)) = &f.annotation {
+                    visit(&Type::Tuple(e.clone()));
+                }
+            }
+        }
+        for e in &prog.enums {
+            for variant in &e.variants {
+                for f in &variant.args {
+                    if let Some(Type::Tuple(tt)) = &f.annotation {
+                        visit(&Type::Tuple(tt.clone()));
+                    }
+                }
+            }
+        }
+        for tr in &prog.traits {
+            for m in &tr.methods {
+                walk_block(&m.body, inferencer, visit);
+                if let Some(Type::Tuple(tt)) = &m.return_type {
+                    visit(&Type::Tuple(tt.clone()));
+                }
+                for p in &m.params {
+                    if let Some(Type::Tuple(tt)) = &p.annotation {
+                        visit(&Type::Tuple(tt.clone()));
+                    }
+                }
+            }
+        }
+        for im in &prog.impls {
+            for m in &im.methods {
+                walk_block(&m.body, inferencer, visit);
+                if let Some(Type::Tuple(tt)) = &m.return_type {
+                    visit(&Type::Tuple(tt.clone()));
+                }
+                for p in &m.params {
+                    if let Some(Type::Tuple(tt)) = &p.annotation {
+                        visit(&Type::Tuple(tt.clone()));
+                    }
+                }
+            }
+        }
+    }
+
     fn transpile_expr(&self, expr: &Expr) -> String {
         match &expr.kind {
             ExprKind::Identifier { name } => {
@@ -794,11 +1138,23 @@ impl CodegenCtx<'_> {
             }
             ExprKind::RangeLiteral { .. } => "/* range literal */ 0".to_string(),
             ExprKind::StructInit { fields, .. } => self.transpile_struct_init(expr.ty, fields),
+            ExprKind::TupleLit { .. } => self.transpile_tuple_lit(expr),
             ExprKind::FieldAccess {
                 expr: inner,
                 field_name,
             } => self.transpile_field_access(inner, field_name),
             ExprKind::Index { expr: inner, index } => {
+                // Tuple slot access: `t[i]` on a tuple-valued container becomes a
+                // struct member access `t.__slotN` (only valid for int-literal i,
+                // which inference already enforces). Otherwise this is array/ptr indexing.
+                if let Ok(Type::Tuple(_)) = self.inferencer.store.resolve(inner.ty)
+                    && let ExprKind::Literal {
+                        value: Literal::Int(i),
+                    } = &index.kind
+                {
+                    let container = self.transpile_expr(inner);
+                    return format!("({container}).__slot{i}");
+                }
                 let container = self.transpile_expr(inner);
                 let idx = self.transpile_expr(index);
                 format!("({container})[{idx}]")

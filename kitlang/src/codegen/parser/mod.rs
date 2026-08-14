@@ -677,14 +677,10 @@ impl Parser {
                 //
                 // Unwrap it before delegating to `parse_block`, which expects a `Rule::body` pair
                 // containing `Rule::statement` children.
-                let block_pair = inner
-                    .clone()
-                    .into_inner()
-                    .next()
-                    .ok_or_else(|| {
-                        parse_error!("block_stmt wrapper is empty")
-                            .with_context(self.context_from_span(parent_span))
-                    })?;
+                let block_pair = inner.clone().into_inner().next().ok_or_else(|| {
+                    parse_error!("block_stmt wrapper is empty")
+                        .with_context(self.context_from_span(parent_span))
+                })?;
 
                 debug_assert_eq!(block_pair.as_rule(), Rule::block);
 
@@ -804,6 +800,14 @@ impl Parser {
                 .with_context(self.context_from_span(&parent_span))
         })?;
         match inner_rule.as_rule() {
+            Rule::tuple_type => {
+                let inner_base_type = inner_rule.into_inner();
+                let mut elem_types: Vec<Type> = Vec::new();
+                for elem in inner_base_type {
+                    elem_types.push(self.parse_type(elem)?);
+                }
+                Ok(Type::Tuple(elem_types))
+            }
             Rule::base_type => {
                 let mut inner_base_type = inner_rule.into_inner();
                 let base_name = inner_base_type

@@ -39,7 +39,7 @@ pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
                 column,
                 child.kind()
             );
-            decls.skipped_nodes.push(crate::types::SkippedNode {
+            decls.skipped_nodes.push(SkippedNode {
                 line,
                 column,
                 kind: child.kind().to_string(),
@@ -85,10 +85,11 @@ pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
         }
     }
 
-    // Fallback: tree-sitter-c recovery can collapse a broken declaration into loose tokens
-    // under a root-level `ERROR` node whose direct children don't individually report errors
-    // (e.g. an unclosed parenthesis). Only `root.has_error()` reveals it, so warn here rather
-    // than dropping declarations completely silently.
+    // Fallback: tree-sitter-c may group broken declarations under a root `ERROR` node.
+    //
+    // Because the children of that node might not individually report errors (e.g., an unclosed
+    // parenthesis), we must check `root.has_error()` to detect the failure. This ensures we warn
+    // the the user instead of skipping declarations silently.
     if root.has_error() && !recorded_skip {
         log::warn!(
             "C header parse tree contains errors; some declarations may be skipped (node: {})",

@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::codegen::ast::{Attributed, Program};
+use crate::codegen::hash;
 use crate::codegen::module::{Module, ModulePath};
 use crate::codegen::name_mangling::mangle_name;
 use crate::codegen::types::ToCRepr;
@@ -79,12 +80,7 @@ fn filter_by_name<T: Clone>(
 /// generated header filenames. This avoids collisions with system or third-party C headers by
 /// making every generated header name unique.
 fn module_header_hash(source_path: &Path) -> String {
-    let path_str = source_path.to_string_lossy();
-    let mut h = 5381u64;
-    for b in path_str.bytes() {
-        h = h.wrapping_mul(33).wrapping_add(b as u64);
-    }
-    format!("{:016x}", h)
+    hash::djb2_hash(source_path.to_string_lossy().as_bytes())
 }
 
 impl CodegenCtx<'_> {
@@ -100,6 +96,16 @@ impl CodegenCtx<'_> {
 
         for path in sorted_paths {
             self.current_module = path.clone();
+
+            // Emit the shared tuple-struct header using this module's context so
+            // struct element types get the same module-aware (mangled) names as
+            // the code that references them. For single-module programs (all
+            // examples) this is unambiguous; for multi-module programs the
+            // definitions reflect the last compiled module.
+            let tuple_header = self.generate_tuple_header(self.inferencer, merged);
+            fs::write(self.build_dir.join("kit_tuples.h"), tuple_header)
+                .map_err(CompilationError::Io)?;
+
             if let Some(module) = self.registry.get(path) {
                 let names = NameSets::from_module(module);
 
@@ -175,12 +181,20 @@ impl CodegenCtx<'_> {
         }
 
         for td in &prog.typedefs {
-            let underlying = td.type_def.to_c_repr();
-            let _ = writeln!(out, "typedef {} {};", underlying.name, td.name);
+            // Route through `type_to_c_name` so tuple underlying types use the
+            // same module-aware struct name as every other reference site.
+            let underlying = self.type_to_c_name(&td.type_def);
+            let _ = writeln!(out, "typedef {} {};", underlying, td.name);
         }
         if !prog.typedefs.is_empty() {
             out.push('\n');
         }
+
+        // Shared tuple struct definitions (guarded internally). Emitted *after*
+        // the struct/enum/typedef declarations so struct element types are
+        // complete when used as tuple fields.
+        let _ = writeln!(out, "#include \"kit_tuples.h\"");
+        out.push('\n');
 
         for global in &prog.globals {
             if global.is_public || global.is_extern() {
@@ -235,6 +249,7 @@ impl CodegenCtx<'_> {
         let hash = module_header_hash(&module.source_path);
         let header = format!("{}_{}.h", module.path.join("_"), hash);
         let _ = writeln!(out, "#include \"{}\"", header);
+        let _ = writeln!(out, "#include \"kit_tuples.h\"");
 
         for import in &module.imports {
             if let Some(dep_module) = self.registry.get(&import.path) {

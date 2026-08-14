@@ -1,0 +1,16 @@
+include "stdio.h";
+
+struct Point {
+    var x: Int;
+    var y: Int;
+}
+
+function origin(): (Int, Point) {
+    return (0, struct Point { x: 1, y: 2 });
+}
+
+function main(): Int {
+    var p = origin();
+    printf("%d %d %d\n", p[0], p[1].x, p[1].y);
+    return 0;
+}

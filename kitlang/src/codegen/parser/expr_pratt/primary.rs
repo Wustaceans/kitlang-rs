@@ -157,13 +157,30 @@ impl<'a> ExprParser<'a> {
                 self.advance(); // consume `(`
                 let first = self.parse_expr()?;
                 if self.peek().kind == Tok::Comma {
-                    return Err(ExprParseError::Custom(
-                        "tuple literals are not yet supported by the Pratt parser".into(),
-                    ));
+                    // `(e1, e2, ...)`: a tuple literal (>= 2 elements).
+                    let first_span = first.span.clone();
+                    let mut elements = vec![first];
+                    while self.peek().kind == Tok::Comma {
+                        self.advance();
+                        // Trailing comma is allowed (parses to an empty trailing element).
+                        if self.peek().kind == Tok::RParen {
+                            break;
+                        }
+                        elements.push(self.parse_expr()?);
+                    }
+                    let (_, end) = self.token_abs(&self.peek().span);
+                    self.expect(&Tok::RParen)?;
+                    let span_end = end.max(first_span.offset + first_span.length);
+                    Ok(Expr {
+                        kind: ExprKind::TupleLit { elements },
+                        ty: TypeId::default(),
+                        span: self.spanned(first_span.offset, span_end),
+                    })
+                } else {
+                    self.expect(&Tok::RParen)?;
+                    // Parenthesized expression: preserve the inner expr's span
+                    Ok(first)
                 }
-                self.expect(&Tok::RParen)?;
-                // Parenthesized expression: preserve the inner expr's span
-                Ok(first)
             }
             Tok::LBracket => self.parse_array_literal(),
             Tok::KwStruct => self.parse_struct_init(),
