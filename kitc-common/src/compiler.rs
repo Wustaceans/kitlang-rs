@@ -1,19 +1,10 @@
 use std::convert::Infallible;
-use std::env;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use which::which;
 
+use crate::compiler_detect;
 pub use crate::error::Error;
-
-const CANDIDATES: &[&str] = &[
-    #[cfg(windows)]
-    "cl",
-    "cc",
-    "clang",
-    "gcc",
-];
 
 type NoSearch = fn(&Path) -> Option<String>;
 
@@ -46,6 +37,8 @@ impl FromStr for Toolchain {
             "clang" => Toolchain::Clang,
             #[cfg(windows)]
             "cl" => Toolchain::Msvc,
+            #[cfg(windows)]
+            "clang-cl" => Toolchain::Clang,
             _ => Toolchain::Other,
         })
     }
@@ -82,51 +75,19 @@ where
 impl Toolchain {
     /// Return (toolchain, path to the compiler executable) if one was found.
     ///
-    /// Detection checks (in order)
-    /// 1. `CC` env var (if set and resolves)
-    /// 2. Known candidates on PATH (`cl`, `cc`, `clang`, `gcc`).
+    /// This delegates to the single, shared compiler-detection routine
+    /// ([`crate::compiler_detect::get_or_detect_compiler_info`]), so detection is identical to the
+    /// CLI startup check. Overrides are honored in this order: `KITC_CC` (explicit override), then
+    /// `CC`, then known candidates on `PATH`, then, on Windows, an MSVC install located via
+    /// `vswhere`.
     ///
-    /// The returned `Toolchain` enum describes the *detected* compiler type (gcc/clang/msvc).
+    /// The returned `Toolchain` enum describes the *detected* compiler type
+    /// (gcc/clang/msvc).
+    ///
+    /// On Unix, a generic `cc` symlink is resolved to its underlying implementation (GCC or clang).
     pub fn executable_path() -> Option<(Toolchain, PathBuf)> {
-        // Respect an explicit compiler override first.
-        //
-        // If CC points to a compiler name (or executable), resolve it on `PATH` and use it instead
-        // of probing the system.
-        if let Ok(env_cc) = env::var("CC")
-            && let Ok(path) = which(&env_cc)
-        {
-            return Some((detect_toolchain::<NoSearch>(&path, None), path));
-        }
-
-        // Otherwise, search through the preferred compiler candidates in order.
-        //
-        // The first compiler we can successfully resolve is considered the system's default C
-        // compiler.
-        for name in CANDIDATES {
-            if let Ok(path) = which(name) {
-                let toolchain = if cfg!(unix) && *name == "cc" {
-                    // On Unix-like systems, `cc` is often a generic frontend or symlink rather
-                    // than the actual compiler. Resolve it to its underlying implementation (like
-                    // GCC or clang) so we report the real toolchain instead of the generic wrapper.
-                    resolve_cc_toolchain(&path)
-                } else {
-                    // Other compiler names already identify a specific toolchain.
-                    detect_toolchain::<NoSearch>(&path, None)
-                };
-
-                return Some((toolchain, path));
-            }
-        }
-
-        // On Windows, MSVC's cl.exe is usually not on PATH (only the VS developer cmd adds it).
-        // Fall back to locating an installed MSVC via vswhere.
-        #[cfg(windows)]
-        if let Some(cl) = crate::msvc::find_msvc() {
-            return Some((Toolchain::Msvc, cl));
-        }
-
-        // We didn't find any compiler on PATH
-        None
+        let info = compiler_detect::get_or_detect_compiler_info()?;
+        Some((info.toolchain, info.compiler_path))
     }
 
     /// Detect the toolchain for a specific compiler executable path without searching `PATH`. Used
@@ -296,7 +257,7 @@ fn map_msvc_to_gnuc(flag: &str) -> String {
 
 /// `cc` is often a symlink to an actual compiler on the system, so
 /// we need to get an actual path to the C compiler.
-fn resolve_cc_toolchain(path: &Path) -> Toolchain {
+pub(crate) fn resolve_cc_toolchain(path: &Path) -> Toolchain {
     if cfg!(unix)
         && path.ends_with("cc")
         && let Ok(real_path) = std::fs::read_link(path)

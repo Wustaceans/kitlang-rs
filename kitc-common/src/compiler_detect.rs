@@ -48,12 +48,36 @@ static COMPILER_INFO: OnceLock<Option<CompilerInfo>> = OnceLock::new();
 /// queries it for built-in system include paths, and caches the result globally.
 ///
 /// Returns the detected [`CompilerInfo`], or `None` if no compiler was found
-/// (in which case an error message is printed to stderr).
+/// (in which case an error message is printed to stderr and the caller should
+/// abort).
 ///
 /// This should be called once at program startup to fail fast if no C compiler is available.
 pub fn init_compiler_info() -> Option<CompilerInfo> {
     let info = detect_compiler();
+    if info.is_none() {
+        eprintln!(
+            "Error: No C compiler found. Please install gcc, clang, or MSVC and ensure it's in PATH."
+        );
+        eprintln!("       You can also set KITC_CC to specify a compiler explicitly.");
+    }
     COMPILER_INFO.set(info.clone()).ok();
+    info
+}
+
+/// Returns the cached compiler info, running system detection on first use.
+///
+/// This is the single entry point shared by the CLI startup check ([`init_compiler_info`]) and the
+/// library compilation path ([`crate::compiler::Toolchain::executable_path`]).
+///
+/// Because both go through the same routine, `KITC_CC`/`CC` overrides, candidate discovery,
+/// and MSVC lookup are honored consistently everywhere a compiler is needed.
+pub fn get_or_detect_compiler_info() -> Option<CompilerInfo> {
+    if let Some(ci) = get_compiler_info() {
+        return Some(ci.clone());
+    }
+    // Run detection once and cache the result (including `None`) so repeated lookups from the compile path don't re-run `vswhere`/PATH searches.
+    let info = detect_compiler();
+    let _ = COMPILER_INFO.set(info.clone());
     info
 }
 
@@ -145,11 +169,8 @@ fn detect_compiler() -> Option<CompilerInfo> {
         return Some(info);
     }
 
-    // No compiler found
-    eprintln!(
-        "Error: No C compiler found. Please install gcc, clang, or MSVC and ensure it's in PATH."
-    );
-    eprintln!("       You can also set KITC_CC to specify a compiler explicitly.");
+    // No compiler found. The caller (`init_compiler_info` for the CLI, or the
+    // library path via `get_or_detect_compiler_info`) decides how to report this.
     None
 }
 
@@ -165,7 +186,10 @@ fn get_candidates() -> Vec<&'static str> {
 }
 
 fn try_compiler(path: &Path) -> Option<CompilerInfo> {
-    let toolchain = detect_toolchain(path);
+    // Resolve the underlying toolchain for this executable. This is shared with
+    // `Toolchain::executable_path` so detection is consistent, and it follows the
+    // Unix `cc` symlink to its real implementation (GCC or clang).
+    let toolchain = crate::compiler::resolve_cc_toolchain(path);
 
     let system_include_dirs = match toolchain {
         Toolchain::Gcc | Toolchain::Clang => query_gcc_like_includes(path),
@@ -190,24 +214,6 @@ fn try_compiler(path: &Path) -> Option<CompilerInfo> {
         target_triple,
         is_cross_compiling,
     })
-}
-
-fn detect_toolchain(path: &Path) -> Toolchain {
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match name.as_str() {
-        "gcc" | "cc" => Toolchain::Gcc,
-        "clang" => Toolchain::Clang,
-        #[cfg(windows)]
-        "cl" => Toolchain::Msvc,
-        #[cfg(windows)]
-        "clang-cl" => Toolchain::Clang, // Treat clang-cl as Clang for include purposes
-        _ => Toolchain::Other,
-    }
 }
 
 /// Queries a GCC/Clang-compatible compiler for its built-in system include paths.
