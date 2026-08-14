@@ -1,0 +1,11 @@
+include "stdio.h";
+
+function main() {
+    defer printf("first\n");
+    defer {
+        printf("second\n");
+        defer printf("nested\n");
+    }
+    printf("body\n");
+    return 0;
+}

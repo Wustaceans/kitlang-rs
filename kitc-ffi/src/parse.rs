@@ -19,9 +19,9 @@ pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
         .ok_or_else(|| FfiError::Parse("Failed to parse C source".to_string()))?;
 
     let root = tree.root_node();
-    if root.has_error() {
-        log::warn!("C header parse tree contains errors (some declarations may be skipped)");
-    }
+    // Track whether any per-child parse error was recorded so the fallback warning
+    // below only fires for error shapes the per-child loop cannot see.
+    let mut recorded_skip = false;
 
     let source_bytes = source.as_bytes();
     let mut decls = CDeclarations::default();
@@ -29,6 +29,21 @@ pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         if child.has_error() {
+            let pos = child.start_position();
+            let line = pos.row + 1;
+            let column = pos.column + 1;
+            log::warn!(
+                "Skipping C declaration at line {} column {} (node kind: {}) due to parse errors",
+                line,
+                column,
+                child.kind()
+            );
+            decls.skipped_nodes.push(crate::types::SkippedNode {
+                line,
+                column,
+                kind: child.kind().to_string(),
+            });
+            recorded_skip = true;
             continue;
         }
         match child.kind() {
@@ -67,6 +82,17 @@ pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
             }
             _ => {}
         }
+    }
+
+    // Fallback: tree-sitter-c recovery can collapse a broken declaration into loose tokens
+    // under a root-level `ERROR` node whose direct children don't individually report errors
+    // (e.g. an unclosed parenthesis). Only `root.has_error()` reveals it, so warn here rather
+    // than dropping declarations completely silently.
+    if root.has_error() && !recorded_skip {
+        log::warn!(
+            "C header parse tree contains errors; some declarations may be skipped (node: {})",
+            root.kind()
+        );
     }
 
     Ok(decls)

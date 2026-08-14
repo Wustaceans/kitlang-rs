@@ -112,16 +112,43 @@ mod tests {
     }
 
     #[test]
-    fn test_header_with_error() {
-        // Header with a syntax error - should still produce partial results
+    fn test_header_with_error_records_skipped_nodes() {
+        // A syntax error inside the header: valid siblings are still extracted, and the
+        // broken nodes are recorded so callers can diagnose partial results.
         let source = r#"
             int valid_function(int x);
             this is not valid c
             void another_function(void);
         "#;
-        // Should not panic, might return partial results
-        let result = extract_from_preprocessed(source);
-        assert!(result.is_ok() || result.is_err());
+        let decls = extract_from_preprocessed(source).unwrap();
+        assert_eq!(
+            decls.functions.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            vec!["valid_function", "another_function"]
+        );
+        assert!(
+            !decls.skipped_nodes.is_empty(),
+            "broken nodes must be recorded"
+        );
+        assert!(
+            decls
+                .skipped_nodes
+                .iter()
+                .any(|s| s.line > 0 && s.column > 0)
+        );
+    }
+
+    #[test]
+    fn test_whole_file_error_keeps_valid_siblings() {
+        // Recovery can collapse the whole file into a single root ERROR node whose direct
+        // children report no error; valid declarations inside it are still extracted, and
+        // the parse does not fail outright.
+        let source =
+            "int valid_function(int x);\nint broken_function( {\nvoid another_function(void);\n";
+        let decls = extract_from_preprocessed(source).unwrap();
+        assert_eq!(
+            decls.functions.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            vec!["valid_function", "another_function"]
+        );
     }
 
     #[test]

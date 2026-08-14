@@ -32,6 +32,18 @@ pub fn register_c_header_with_config(
         CompilationError::CompileError(format!("Failed to process C header '{}': {e}", header_path))
     })?;
 
+    // Surface declarations the header parser had to skip so users can diagnose
+    // missing symbols that are actually unparsed C rather than unknown Kit APIs.
+    for skipped in &decls.skipped_nodes {
+        log::warn!(
+            "C header '{}': skipped {} at line {} column {} due to parse errors",
+            header_path,
+            skipped.kind,
+            skipped.line,
+            skipped.column
+        );
+    }
+
     register_declarations(decls, inferencer)
 }
 

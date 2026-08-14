@@ -572,6 +572,13 @@ impl Parser {
             .map(|p| self.parse_expr(p))
             .transpose()?;
 
+        if annotation.is_none() && default.is_none() {
+            return Err(parse_error!(
+                "struct field '{name}' must have a type annotation or initializer"
+            )
+            .with_context(self.context_for(pair)));
+        }
+
         Ok(Field {
             name,
             ty: TypeId::default(),

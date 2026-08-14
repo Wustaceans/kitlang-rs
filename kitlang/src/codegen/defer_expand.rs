@@ -61,7 +61,30 @@ fn expand_stmt(
 ) {
     match stmt.kind {
         StmtKind::Defer { body } => {
-            pending.push(*body);
+            // Recursively expand the body so nested defers are relocated to their
+            // correct execution point instead of surviving into codegen.
+            let mut body_pending: Vec<Stmt> = Vec::new();
+            let mut body_output: Vec<Stmt> = Vec::new();
+            expand_stmt(
+                *body,
+                &mut body_pending,
+                inherited_run,
+                inherited_break,
+                &mut body_output,
+            );
+            // Drain body's own defers (LIFO) into its output.
+            for d in body_pending.into_iter().rev() {
+                body_output.push(d);
+            }
+            if body_output.is_empty() {
+                return;
+            }
+            let expanded = if body_output.len() == 1 {
+                body_output.into_iter().next().unwrap()
+            } else {
+                Stmt::new(StmtKind::Block(Block { stmts: body_output }), stmt.span)
+            };
+            pending.push(expanded);
         }
 
         StmtKind::Block(block) => {

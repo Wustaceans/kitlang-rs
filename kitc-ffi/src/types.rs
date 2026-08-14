@@ -241,6 +241,17 @@ impl fmt::Display for CQualifier {
     }
 }
 
+/// A C declaration that was skipped due to parse errors.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkippedNode {
+    /// 1-indexed line number of the skipped node.
+    pub line: usize,
+    /// 1-indexed column number of the skipped node.
+    pub column: usize,
+    /// The tree-sitter node kind (e.g. "function_definition", "declaration").
+    pub kind: String,
+}
+
 /// The collection of all declarations extracted from a C header.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CDeclarations {
@@ -258,6 +269,8 @@ pub struct CDeclarations {
     pub macro_constants: Vec<CMacroConstant>,
     /// Global variable declarations.
     pub globals: Vec<CGlobalVar>,
+    /// Declarations that were skipped due to parse errors.
+    pub skipped_nodes: Vec<SkippedNode>,
 }
 
 impl CDeclarations {
@@ -281,6 +294,7 @@ impl CDeclarations {
         self.typedefs.extend(other.typedefs);
         self.macro_constants.extend(other.macro_constants);
         self.globals.extend(other.globals);
+        self.skipped_nodes.extend(other.skipped_nodes);
     }
 
     /// Look up a typedef by name.

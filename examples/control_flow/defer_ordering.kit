@@ -1,0 +1,12 @@
+include "stdio.h";
+
+function main() {
+    defer {
+        printf("a\n");
+        defer printf("b\n");
+        printf("c\n");
+        defer printf("d\n");
+    }
+    printf("outer\n");
+    return 0;
+}
