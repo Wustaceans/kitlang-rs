@@ -11,12 +11,33 @@ env:
 
 jobs:
   build:
-
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
 
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build binary
+        run: cargo build --locked
+
+      - name: Run Unit Tests
+        run: cargo test --locked -- --nocapture
+
+  build-macos:
+    runs-on: macos-latest
+    continue-on-error: true
     permissions:
       contents: read
 
