@@ -282,6 +282,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is not being approximated
     fn float_literals() {
         assert_eq!(kinds("3.14"), vec![Tok::FloatLit(3.14)]);
         assert_eq!(kinds("1.0e10"), vec![Tok::FloatLit(1.0e10)]);

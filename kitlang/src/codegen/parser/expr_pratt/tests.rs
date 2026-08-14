@@ -40,6 +40,7 @@ fn integer_literal() {
 
 /// Float literal `3.14` is parsed with correct precision.
 #[test]
+#[allow(clippy::approx_constant)] // 3.14 is not being approximated
 fn float_literal() {
     let e = p("3.14");
     assert!(
