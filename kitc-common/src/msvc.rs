@@ -13,6 +13,7 @@ use find_msvc_tools::Tool as MsvcTool;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 
 // --- Discovery (delegated to find-msvc-tools) ---
@@ -58,16 +59,125 @@ pub fn msvc_environment() -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-/// System include directories for MSVC, discovered from the toolchain's `INCLUDE` environment variable.
+/// System include directories for MSVC.
+///
+/// The toolchain's `INCLUDE` environment variable is preferred because it
+/// matches exactly what `cl.exe` would search. Runners that are not launched
+/// from a Visual Studio developer prompt often have an empty `INCLUDE`, so when
+/// the tool path yields nothing we fall back to scanning the filesystem for the
+/// standard MSVC and Windows SDK header roots ([`manual_include_dirs`]).
 pub fn get_includes() -> Vec<PathBuf> {
-    get_tool()
-        .and_then(|tool| {
-            tool.env()
-                .into_iter()
-                .find(|(k, _)| k.to_string_lossy().as_ref() == "INCLUDE")
-                .map(|(_, v)| env::split_paths(v).collect())
-        })
-        .unwrap_or_default()
+    let tool = get_tool().and_then(|tool| {
+        tool.env()
+            .into_iter()
+            .find(|(k, _)| k.to_string_lossy().as_ref() == "INCLUDE")
+            .map(|(_, v)| env::split_paths(v).collect::<Vec<_>>())
+    });
+    match tool {
+        Some(dirs) if !dirs.is_empty() => dirs,
+        _ => manual_include_dirs(),
+    }
+}
+
+/// Discover include directories straight from the filesystem.
+///
+/// This is independent of the developer-shell environment. It locates the two
+/// standard header roots that make up an MSVC `INCLUDE` value: the toolchain
+/// `include` directory (vcruntime.h, sal.h, ...) and the Windows SDK `ucrt`,
+/// `um`, and `shared` directories (stdio.h, stdlib.h, sal.h, ...). Each root is
+/// enumerated and the highest installed version is chosen.
+fn manual_include_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(inc) = latest_msvc_include_dir() {
+        dirs.push(inc);
+    }
+    dirs.extend(latest_windows_sdk_include_dirs());
+    dirs
+}
+
+/// Locate the Visual Studio installation root.
+///
+/// Uses `vswhere` when present, then falls back to the conventional install
+/// locations on disk.
+fn visual_studio_root() -> Option<PathBuf> {
+    let vswhere =
+        Path::new("C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe");
+    if vswhere.exists() {
+        let out = Command::new(vswhere)
+            .args([
+                "-products",
+                "*",
+                "-requires",
+                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                "-property",
+                "installationPath",
+            ])
+            .output()
+            .ok()?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let line = stdout.lines().next().unwrap_or("").trim().to_string();
+        if !line.is_empty() {
+            return Some(PathBuf::from(line));
+        }
+    }
+
+    for root in [
+        "C:\\Program Files\\Microsoft Visual Studio",
+        "C:\\Program Files (x86)\\Microsoft Visual Studio",
+    ] {
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    return Some(entry.path());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The `include` directory of the highest installed MSVC toolchain version
+/// (containing vcruntime.h, sal.h, and other compiler headers).
+fn latest_msvc_include_dir() -> Option<PathBuf> {
+    let vs = visual_studio_root()?;
+    let tools = vs.join("VC").join("Tools").join("MSVC");
+    let versions = std::fs::read_dir(&tools).ok()?;
+    highest_dir(versions)
+        .map(|d| d.join("include"))
+        .filter(|p| p.is_dir())
+}
+
+/// The `ucrt`, `um`, and `shared` include directories of the highest installed
+/// Windows SDK version (containing stdio.h, stdlib.h, sal.h, and friends).
+fn latest_windows_sdk_include_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for kits in [
+        "C:\\Program Files (x86)\\Windows Kits\\10\\Include",
+        "C:\\Program Files\\Windows Kits\\10\\Include",
+    ] {
+        let Ok(versions) = std::fs::read_dir(kits) else {
+            continue;
+        };
+        let Some(latest) = highest_dir(versions) else {
+            continue;
+        };
+        for sub in ["ucrt", "um", "shared"] {
+            let p = latest.join(sub);
+            if p.is_dir() {
+                dirs.push(p);
+            }
+        }
+    }
+    dirs
+}
+
+/// Pick the versioned subdirectory whose name sorts last (highest version).
+fn highest_dir(versions: std::fs::ReadDir) -> Option<PathBuf> {
+    versions
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .max_by(|a, b| a.file_name().cmp(&b.file_name()))
 }
 
 // --- Toolchain flag helpers ---
@@ -139,5 +249,34 @@ pub fn map_gnuc_to_msvc(flag: &str) -> String {
                 flag.to_string()
             }
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// The filesystem-based discovery must locate a real MSVC toolchain include
+    /// dir and a Windows SDK include dir (stdio.h / stdlib.h live in the latter).
+    #[test]
+    fn manual_discovery_finds_msvc_and_sdk_headers() {
+        let dirs = manual_include_dirs();
+        assert!(
+            !dirs.is_empty(),
+            "manual include discovery returned nothing"
+        );
+
+        let has_vcruntime = dirs.iter().any(|d| d.join("vcruntime.h").exists());
+        let has_stdlib = dirs.iter().any(|d| d.join("stdlib.h").exists());
+        let has_stdio = dirs.iter().any(|d| d.join("stdio.h").exists());
+
+        assert!(
+            has_vcruntime,
+            "expected an MSVC include dir with vcruntime.h, got {dirs:?}"
+        );
+        assert!(
+            has_stdlib && has_stdio,
+            "expected a Windows SDK include dir with stdlib.h/stdio.h, got {dirs:?}"
+        );
     }
 }
