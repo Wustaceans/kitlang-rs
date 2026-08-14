@@ -1022,14 +1022,30 @@ impl TypeInferencer {
         let (struct_name, fields) = match resolved {
             Type::Struct { name, fields } => (name, fields),
             Type::Named(type_name) => {
-                if let Some(struct_def) = self.symbols.lookup_struct(&type_name) {
+                // Follow typedef aliases (e.g. `div_t` -> `_div_t`) so field access works on the
+                // public typedef name, not just the underlying struct tag.
+                //
+                // This is platform-independent: it only matters for headers that expose a typedef'd
+                // struct (which happens on MSVC/Windows). Headers using anonymous struct tags are
+                // unaffected.
+                let mut candidate = type_name.clone();
+                loop {
+                    match self
+                        .store
+                        .resolve_typedef_type(&Type::Named(candidate.clone()))
+                    {
+                        Some(Type::Named(next)) if next != candidate => candidate = next,
+                        _ => break,
+                    }
+                }
+                if let Some(struct_def) = self.symbols.lookup_struct(&candidate) {
                     let fields: Vec<(String, TypeId)> = struct_def
                         .fields
                         .iter()
                         .map(|f| (f.name.clone(), f.ty))
                         .collect();
-                    (type_name, fields)
-                } else if let Some(enum_def) = self.symbols.lookup_enum(&type_name) {
+                    (candidate, fields)
+                } else if let Some(enum_def) = self.symbols.lookup_enum(&candidate) {
                     if let Some(variant) = enum_def
                         .variants
                         .iter()

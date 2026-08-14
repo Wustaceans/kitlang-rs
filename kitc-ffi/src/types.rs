@@ -329,6 +329,18 @@ impl CType {
                         return current;
                     }
                     if let Some(underlying) = declarations.lookup_typedef(name) {
+                        // If the typedef aliases another `Named` type--a private struct tag
+                        // (`typedef struct _div_t { ... } div_t;`) or a further typedef--keep the
+                        // public alias name rather than descending to the internal tag.
+                        //
+                        // Outputting `_div_t` would reference a name kitc never declares,
+                        // while `div_t` is the type actually visible from the header.
+                        //
+                        // Any header using an anonymous struct tag (`typedef struct { ... } T;`)
+                        // resolves to a struct, not a `Named`, so it's unaffected.
+                        if matches!(underlying, CType::Named(_)) {
+                            return current;
+                        }
                         current = underlying;
                     } else {
                         return current;

@@ -170,13 +170,37 @@ impl CodegenCtx<'_> {
     }
 
     fn type_to_c_name(&self, t: &Type) -> String {
-        // Resolve typedef aliases so variables use the underlying C type name
+        let resolved = self.preferred_c_type(t);
+        self.type_to_c_name_with_module(&resolved, &self.current_module)
+    }
+
+    /// Resolve `t` to the type whose name should be emitted in generated C.
+    ///
+    /// Typedefs are followed, but when one aliases another `Named` type - the private struct tag
+    /// behind a public alias (`typedef struct _div_t { ... } div_t;`) - the public alias is kept
+    /// instead of descending to the internal tag, so generated code refers to `div_t`, not the
+    /// internal `_div_t` kitc never declares.
+    ///
+    /// Headers using an anonymous struct tag (`typedef struct { ... } T;`) resolve to a struct,
+    /// not a `Named`, so they are unaffected on any target.
+    fn preferred_c_type(&self, t: &Type) -> Type {
         let resolved = self
             .inferencer
             .store
             .resolve_typedef_type(t)
             .unwrap_or_else(|| t.clone());
-        self.type_to_c_name_with_module(&resolved, &self.current_module)
+
+        // If the typedef aliases another `Named` type (a struct tag or further typedef),
+        // keep the public alias name rather than descending to the internal tag.
+        let keep_alias = matches!(
+            (t, &resolved),
+            (Type::Named(name), Type::Named(underlying))
+                if underlying.as_str() != name.as_str()
+        );
+        if keep_alias {
+            return t.clone();
+        }
+        resolved
     }
 
     fn type_to_c_name_with_module(&self, t: &Type, module: &ModulePath) -> String {
@@ -186,6 +210,21 @@ impl CodegenCtx<'_> {
             } else if self.inferencer.is_struct_type(name) {
                 format!("struct {}", mangle_name(module, name))
             } else {
+                // A `Named` type that is a typedef alias for an imported C struct
+                // (e.g. `div_t` -> `_div_t`) must be emitted under its public alias,
+                // unmangled: the alias is the name actually declared by the header,
+                // while the internal tag is an implementation detail kitc never
+                // declares.
+                let is_alias_of_imported = match self.inferencer.store.resolve_typedef_type(t) {
+                    Some(Type::Named(target)) => {
+                        target.as_str() != name.as_str()
+                            && self.inferencer.is_imported_struct(target.as_str())
+                    }
+                    _ => false,
+                };
+                if is_alias_of_imported {
+                    return name.clone();
+                }
                 mangle_name(module, name)
             }
         } else {
@@ -488,11 +527,7 @@ impl CodegenCtx<'_> {
             fp
         } else {
             // Resolve typedef aliases so the variable uses the underlying C type name.
-            let resolved = self
-                .inferencer
-                .store
-                .resolve_typedef_type(ty)
-                .unwrap_or_else(|| ty.clone());
+            let resolved = self.preferred_c_type(ty);
             format!(
                 "{} {name}",
                 self.type_to_c_name_with_module(&resolved, module)

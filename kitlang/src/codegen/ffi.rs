@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use kitc_common::get_builtin_headers;
+use kitc_common::{get_builtin_headers, get_system_include_dirs};
 use kitc_ffi::types::*;
 use kitc_ffi::{PreprocessConfig, extract_header, extract_header_from_source};
 
@@ -190,7 +190,7 @@ pub fn register_declarations(
         }
     }
 
-    // 5. Register function signatures (skip variadic — they fall through to the
+    // 5. Register function signatures (skip variadic - they fall through to the
     //    existing "unknown C function" path in inference, which handles variadic calls)
     for func in &decls.functions {
         if func.is_variadic {
@@ -331,7 +331,15 @@ pub fn register_module_includes(
     let source_dir = source_path.parent().unwrap_or(Path::new("."));
 
     // System include directories to search for C headers.
-    let system_dirs: Vec<&Path> = vec![Path::new("/usr/include"), Path::new("/usr/local/include")];
+    //
+    // Always fall back to the conventional Unix locations, then append whatever directories the
+    // active C toolchain reports (e.g. MSVC's `INCLUDE` and the Windows SDK `ucrt`/`um` dirs on
+    // Windows).
+    let mut system_dirs: Vec<PathBuf> = vec![
+        PathBuf::from("/usr/include"),
+        PathBuf::from("/usr/local/include"),
+    ];
+    system_dirs.extend(get_system_include_dirs());
 
     for inc in includes {
         let header_name = inc.path.trim_start_matches('/');
