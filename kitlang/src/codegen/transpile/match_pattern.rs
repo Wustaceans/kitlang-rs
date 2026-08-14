@@ -1,20 +1,22 @@
 use super::CodegenCtx;
-use crate::codegen::ast::{Expr, ExprKind, Literal, MatchArm, MatchStmt};
+use crate::codegen::ast::{self, Expr, ExprKind, Literal, MatchArm, MatchStmt};
 use crate::codegen::name_mangling::mangle_enum_variant;
 use crate::codegen::types::TypeId;
 
+/// A variable binding (name, c_type, value).
+pub type VariableBinding = (String, String, String);
+
 /// Result of decomposing a pattern: a C condition and variable bindings.
-/// bindings: (name, c_type, value)
 struct PatternMatch {
     condition: String,
-    bindings: Vec<(String, String, String)>,
+    bindings: Vec<VariableBinding>,
 }
 
 /// A match arm together with its pre-computed C condition and variable bindings.
 struct ArmBindings<'a> {
     arm: &'a MatchArm,
     condition: String,
-    bindings: Vec<(String, String, String)>,
+    bindings: Vec<VariableBinding>,
 }
 
 impl CodegenCtx<'_> {
@@ -72,11 +74,7 @@ impl CodegenCtx<'_> {
         code
     }
 
-    fn transpile_match_body(
-        &self,
-        body: &crate::codegen::ast::Block,
-        bindings: &[(String, String, String)],
-    ) -> String {
+    fn transpile_match_body(&self, body: &ast::Block, bindings: &[VariableBinding]) -> String {
         let mut code = String::from("{\n");
         for (name, ctype, value) in bindings {
             code.push_str(&format!("    {ctype} {name} = {value};\n"));

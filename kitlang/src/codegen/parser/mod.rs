@@ -1020,10 +1020,11 @@ impl Parser {
         if let Some(def) = default_arm {
             let match_span = parent_span;
             arms.push(MatchArm {
-                // `ty: TypeId::default()` is a sentinel — the codegen always
-                // checks `name == "default"` before touching `ty`, so this is
-                // never read.  If you add a new code path that inspects the
-                // pattern's `ty`, guard it against the sentinel first.
+                // `TypeId::default()` is a sentinel: the codegen always checks `name == "default"`
+                // before touching `ty`, so this is never read.
+                //
+                // If you add a new code path that inspects the pattern's `ty`, guard it against
+                // the sentinel first.
                 pattern: Expr {
                     kind: ExprKind::Identifier {
                         name: "default".to_string(),

@@ -262,9 +262,13 @@ fn parse_param_declaration(node: &Node, source: &[u8]) -> Option<CParam> {
     })
 }
 
-/// Walk nested pointer_declarator nodes and collect qualifiers from each level.
-/// Returns (flattened qualifiers, innermost variable name).
-/// Does NOT compute the pointed-to type — the caller provides the base type.
+/// Recursively collects type qualifiers and the identifier name from a declarator node.
+///
+/// Traverses the AST node to extract C-style qualifiers (e.g., const, volatile) and the
+/// variable name, recursing into pointer declarators to capture all qualifiers
+/// across the pointer chain.
+///
+/// Does not compute the pointed-to type; the caller provides the base type.
 fn collect_ptr_qualifiers(node: &Node, source: &[u8]) -> (Vec<CQualifier>, Option<String>) {
     let mut qualifiers: Vec<CQualifier> = Vec::new();
     let mut name: Option<String> = None;
@@ -401,9 +405,9 @@ fn parse_typedef(node: &Node, source: &[u8]) -> Option<CTypedef> {
 
     let mut underlying_type: Option<CType> = None;
     let mut alias_name: Option<String> = None;
-    // Track the index of the alias candidate so we can skip it in the
-    // underlying-type pass. tree-sitter-c may parse known typedef names
-    // (e.g. `size_t`) as `primitive_type` rather than `type_identifier`.
+    // Track the index of the alias candidate so we can skip it in the underlying-type pass.
+    // tree-sitter-c may parse known typedef names (e.g. `size_t`) as `primitive_type` rather than
+    // `type_identifier`.
     let mut alias_idx: Option<usize> = None;
 
     for (i, child) in children.iter().enumerate() {

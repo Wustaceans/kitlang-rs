@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 use crate::compiler::Toolchain;
+
+#[cfg(windows)]
+use crate::msvc;
 
 /// Information about the detected C compiler, including its system include paths.
 ///
@@ -15,10 +18,13 @@ use crate::compiler::Toolchain;
 pub struct CompilerInfo {
     /// The detected compiler toolchain (GCC, Clang, MSVC, etc.).
     pub toolchain: Toolchain,
+
     /// Absolute path to the compiler executable.
     pub compiler_path: PathBuf,
+
     /// System include directories discovered by querying the compiler.
     pub system_include_dirs: Vec<PathBuf>,
+
     /// Extra environment variables that must be set when invoking this compiler.
     ///
     /// For MSVC this carries the Visual Studio build environment (`INCLUDE`, `LIB`, `PATH`, ...)
@@ -26,8 +32,10 @@ pub struct CompilerInfo {
     ///
     /// Empty for GCC/Clang.
     pub env: HashMap<String, String>,
+
     /// Target triple if cross-compiling (e.g., "aarch64-linux-gnu").
     pub target_triple: Option<String>,
+
     /// True if the compiler targets a different architecture/OS than the host.
     pub is_cross_compiling: bool,
 }
@@ -58,11 +66,20 @@ pub fn get_compiler_info() -> Option<&'static CompilerInfo> {
 
 /// Get system include directories from the detected compiler.
 ///
-/// Returns an empty vector if the compiler has not been initialized yet.
+/// On Windows the MSVC toolchain and Windows SDK include directories are always
+/// appended (via filesystem discovery), so standard headers like `stdlib.h` and
+/// `stdio.h` resolve even when no usable compiler has been detected or the
+/// dev shell `INCLUDE` variable is empty.
+///
+/// Returns an empty vector if the compiler has not been initialized yet (on a
+/// non-Windows target with no detected compiler).
 pub fn get_system_include_dirs() -> Vec<PathBuf> {
-    get_compiler_info()
+    let mut dirs = get_compiler_info()
         .map(|ci| ci.system_include_dirs.clone())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    #[cfg(windows)]
+    dirs.extend(msvc::manual_include_dirs());
+    dirs
 }
 
 /// Returns the extra environment variables that must be applied when invoking
@@ -83,7 +100,7 @@ pub fn get_compiler_environment(toolchain: Toolchain, _compiler: &Path) -> HashM
     }
     #[cfg(windows)]
     {
-        crate::msvc::msvc_environment()
+        msvc::msvc_environment()
     }
     #[cfg(not(windows))]
     {
@@ -122,7 +139,7 @@ fn detect_compiler() -> Option<CompilerInfo> {
     // 4. On Windows, MSVC's cl.exe is usually not on PATH (it's only added by the
     //    Visual Studio developer cmd). Locate an installed MSVC via vswhere.
     #[cfg(windows)]
-    if let Some(path) = crate::msvc::find_msvc()
+    if let Some(path) = msvc::find_msvc()
         && let Some(info) = try_compiler(&path)
     {
         return Some(info);
@@ -149,10 +166,11 @@ fn get_candidates() -> Vec<&'static str> {
 
 fn try_compiler(path: &Path) -> Option<CompilerInfo> {
     let toolchain = detect_toolchain(path);
+
     let system_include_dirs = match toolchain {
         Toolchain::Gcc | Toolchain::Clang => query_gcc_like_includes(path),
         #[cfg(windows)]
-        Toolchain::Msvc => crate::msvc::get_includes(),
+        Toolchain::Msvc => msvc::get_includes(),
         Toolchain::Other => query_gcc_like_includes(path),
     };
     let env = get_compiler_environment(toolchain, path);
@@ -194,13 +212,15 @@ fn detect_toolchain(path: &Path) -> Toolchain {
 
 /// Queries a GCC/Clang-compatible compiler for its built-in system include paths.
 ///
-/// Runs `compiler -E -Wp,-v -xc /dev/null` and parses the stderr output to extract
-/// the system include search paths. This is used for GCC/Clang toolchains and as a
-/// best-effort fallback for unknown toolchains (Toolchain::Other).
+/// Runs `compiler -E -Wp,-v -xc -` with an empty stdin and parses the stderr
+/// output to extract the system include search paths. Reading from stdin rather
+/// than `/dev/null` makes the query work on Windows too, where `/dev/null` does
+/// not exist.
 fn query_gcc_like_includes(compiler: &Path) -> Vec<PathBuf> {
     let output = Command::new(compiler)
-        .args(["-E", "-Wp,-v", "-xc", "/dev/null"])
-        .stderr(std::process::Stdio::piped())
+        .args(["-E", "-Wp,-v", "-xc", "-"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
         .output();
 
     let output = match output {

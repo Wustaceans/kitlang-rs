@@ -449,28 +449,31 @@ impl CompilerOptions {
     /// - if `sources` is empty
     /// - if `output` is not set
     /// - if no system compiler can be found and no `compiler_path` was set
-    pub fn build_invocation(&self) -> Result<(PathBuf, Vec<String>), crate::error::Error> {
+    pub fn build_invocation(&self) -> Result<(PathBuf, Vec<String>), Error> {
         if self.sources.is_empty() {
-            return Err(crate::error::Error::CompileError(
+            return Err(Error::CompileError(
                 "no source files specified in CompilerOptions".into(),
             ));
         }
         let out = self.output.as_ref().ok_or_else(|| {
-            crate::error::Error::CompileError(
-                "output (target) path not set in CompilerOptions".into(),
-            )
+            Error::CompileError("output (target) path not set in CompilerOptions".into())
         })?;
 
         let compiler_path = self
             .compiler_path
             .clone()
             .or_else(|| Toolchain::executable_path().map(|(_, p)| p))
-            .ok_or_else(|| crate::error::Error::CompileError("no system compiler found".into()))?;
+            .ok_or_else(|| Error::CompileError("no system compiler found".into()))?;
 
         let mut args = Vec::new();
 
         for inc in &self.includes {
-            args.push(format!("-I{}", inc.display()));
+            // cl.exe expects `/I<dir>`, while gcc/clang expect `-I<dir>`
+            match self.toolchain {
+                #[cfg(windows)]
+                Toolchain::Msvc => args.push(format!("/I{}", inc.display())),
+                _ => args.push(format!("-I{}", inc.display())),
+            }
         }
 
         for s in &self.sources {

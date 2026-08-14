@@ -6,12 +6,11 @@
 //! - build-environment capture;
 //! - include-path discovery;
 //! - flag translation for `cl.exe`.
-//!
-//! All items are only compiled on Windows (`#[cfg(windows)]` on the module declaration in `lib.rs`).
 
 use find_msvc_tools::Tool as MsvcTool;
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -86,7 +85,7 @@ pub fn get_includes() -> Vec<PathBuf> {
 /// `include` directory (vcruntime.h, sal.h, ...) and the Windows SDK `ucrt`,
 /// `um`, and `shared` directories (stdio.h, stdlib.h, sal.h, ...). Each root is
 /// enumerated and the highest installed version is chosen.
-fn manual_include_dirs() -> Vec<PathBuf> {
+pub(crate) fn manual_include_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(inc) = latest_msvc_include_dir() {
         dirs.push(inc);
@@ -125,7 +124,7 @@ fn visual_studio_root() -> Option<PathBuf> {
         "C:\\Program Files\\Microsoft Visual Studio",
         "C:\\Program Files (x86)\\Microsoft Visual Studio",
     ] {
-        if let Ok(entries) = std::fs::read_dir(root) {
+        if let Ok(entries) = fs::read_dir(root) {
             for entry in entries.flatten() {
                 if entry.path().is_dir() {
                     return Some(entry.path());
@@ -141,7 +140,7 @@ fn visual_studio_root() -> Option<PathBuf> {
 fn latest_msvc_include_dir() -> Option<PathBuf> {
     let vs = visual_studio_root()?;
     let tools = vs.join("VC").join("Tools").join("MSVC");
-    let versions = std::fs::read_dir(&tools).ok()?;
+    let versions = fs::read_dir(&tools).ok()?;
     highest_dir(versions)
         .map(|d| d.join("include"))
         .filter(|p| p.is_dir())
@@ -155,7 +154,7 @@ fn latest_windows_sdk_include_dirs() -> Vec<PathBuf> {
         "C:\\Program Files (x86)\\Windows Kits\\10\\Include",
         "C:\\Program Files\\Windows Kits\\10\\Include",
     ] {
-        let Ok(versions) = std::fs::read_dir(kits) else {
+        let Ok(versions) = fs::read_dir(kits) else {
             continue;
         };
         let Some(latest) = highest_dir(versions) else {
