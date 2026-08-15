@@ -58,7 +58,8 @@ pub fn extract_header(header_path: &str, config: &PreprocessConfig) -> FfiResult
     }
 
     let preprocessed = preprocess::preprocess_header(path, config)?;
-    parse::parse_c_header(&preprocessed)
+    let decls = parse::parse_c_header(&preprocessed)?;
+    Ok(decls)
 }
 
 /// Extract declarations from a header source string.

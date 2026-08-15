@@ -19,6 +19,7 @@ pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
         .ok_or_else(|| FfiError::Parse("Failed to parse C source".to_string()))?;
 
     let root = tree.root_node();
+
     // Track whether any per-child parse error was recorded so the fallback warning
     // below only fires for error shapes the per-child loop cannot see.
     let mut recorded_skip = false;
@@ -229,15 +230,21 @@ fn parse_param_declaration(node: &Node, source: &[u8]) -> Option<CParam> {
             "identifier" => {
                 param_name = Some(node_text(&child, source));
             }
-            "pointer_declarator" => {
-                let (ptr_qualifiers, ptr_name) = collect_ptr_qualifiers(&child, source);
+            "pointer_declarator" | "abstract_pointer_declarator" => {
+                let (depth, ptr_qualifiers, ptr_name) = collect_ptr_qualifiers(&child, source);
                 let base = param_type.take().unwrap_or(CType::Int);
                 let all_qualifiers: Vec<CQualifier> = param_qualifiers
                     .iter()
                     .chain(ptr_qualifiers.iter())
                     .cloned()
                     .collect();
-                param_type = Some(CType::Ptr(Box::new(base), all_qualifiers));
+                // Wrap the base type once per pointer level so `char **` (named or
+                // abstract) becomes `Ptr(Ptr(Char))` rather than a single `Ptr(Char)`.
+                let mut ty = base;
+                for _ in 0..depth {
+                    ty = CType::Ptr(Box::new(ty), all_qualifiers.clone());
+                }
+                param_type = Some(ty);
                 param_name = ptr_name;
             }
             "function_declarator" => {
@@ -262,16 +269,25 @@ fn parse_param_declaration(node: &Node, source: &[u8]) -> Option<CParam> {
     })
 }
 
-/// Recursively collects type qualifiers and the identifier name from a declarator node.
+/// Recursively collects the pointer depth, type qualifiers, and the identifier name
+/// from a declarator node.
 ///
-/// Traverses the AST node to extract C-style qualifiers (e.g., const, volatile) and the
-/// variable name, recursing into pointer declarators to capture all qualifiers
-/// across the pointer chain.
+/// Handles:
 ///
-/// Does not compute the pointed-to type; the caller provides the base type.
-fn collect_ptr_qualifiers(node: &Node, source: &[u8]) -> (Vec<CQualifier>, Option<String>) {
+/// - named declarators (`pointer_declarator`, e.g. `char *x`)
+/// - unnamed abstract declarators (`abstract_pointer_declarator`, e.g. `char *` with no name).
+///   which tree-sitter-c emits for things like `int puts(const char *)`
+///
+/// Recurses into nested pointer declarators so multi-level pointers (`char **`) report their
+/// full depth. Does not compute the pointed-to type; the caller provides the base type.
+///
+/// The returned depth counts this node as one level of indirection plus any nested
+/// pointer declarators, so a direct call on a `pointer_declarator`/`abstract_pointer_declarator`
+/// yields the total number of `*` in the chain.
+fn collect_ptr_qualifiers(node: &Node, source: &[u8]) -> (usize, Vec<CQualifier>, Option<String>) {
     let mut qualifiers: Vec<CQualifier> = Vec::new();
     let mut name: Option<String> = None;
+    let mut nested_depth: usize = 0;
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -284,8 +300,11 @@ fn collect_ptr_qualifiers(node: &Node, source: &[u8]) -> (Vec<CQualifier>, Optio
             "identifier" => {
                 name = Some(node_text(&child, source));
             }
-            "pointer_declarator" => {
-                let (inner_q, inner_name) = collect_ptr_qualifiers(&child, source);
+            "pointer_declarator" | "abstract_pointer_declarator" => {
+                // The nested declarator already counts itself as one level,
+                // so we only add its result here rather than counting it again.
+                let (inner_depth, inner_q, inner_name) = collect_ptr_qualifiers(&child, source);
+                nested_depth += inner_depth;
                 qualifiers.extend(inner_q);
                 if inner_name.is_some() {
                     name = inner_name;
@@ -295,7 +314,9 @@ fn collect_ptr_qualifiers(node: &Node, source: &[u8]) -> (Vec<CQualifier>, Optio
         }
     }
 
-    (qualifiers, name)
+    // This node itself is one level of indirection (named or abstract).
+    let depth = 1 + nested_depth;
+    (depth, qualifiers, name)
 }
 
 /// Parse a pointer_declarator node, returning (type, optional name).
@@ -677,24 +698,21 @@ fn parse_field_declaration(node: &Node, source: &[u8]) -> Option<(String, CType)
     Some((name, ty))
 }
 
-/// Helper: get the text of a tree-sitter node.
+/// Get the text of a tree-sitter node.
 fn node_text(node: &Node, source: &[u8]) -> String {
     node.utf8_text(source).unwrap_or_default().to_string()
 }
 
-/// Helper: find a child node by kind (direct children only).
+/// Find a child node by kind (direct children only).
 fn find_child<'a>(node: &'a Node, kind: &str) -> Option<Node<'a>> {
     let mut cursor = node.walk();
     node.children(&mut cursor).find(|c| c.kind() == kind)
 }
 
-/// Helper: find a child node by kind, unwrapping any `declarator` wrappers.
-/// tree-sitter-c wraps declarators in `declarator` nodes, so
-/// `pointer_declarator → declarator → function_declarator` needs this unwrapping.
+/// Find a child node by kind, unwrapping any `declarator` wrappers.
 ///
-/// Takes `Node` by value (it is `Copy`) to avoid tying the return lifetime
-/// to a local borrow, which would cause an error when recursing through
-/// a child that lives only for the current loop iteration.
+/// tree-sitter-c wraps declarators in `declarator` nodes, so
+/// `pointer_declarator -> declarator -> function_declarator` needs this unwrapping.
 fn find_declarator_child<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -797,4 +815,46 @@ fn parse_param_list(node: &Node, source: &[u8]) -> (Vec<CParam>, bool) {
         }
     }
     (params, is_variadic)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// **Regression test** (tree-sitter-c).
+    ///
+    /// An `abstract_pointer_declarator` for an unnamed pointer parameter (e.g. `int puts(const char *)`).
+    ///
+    /// Previously, the `*` was silently ignored, returning `Char` instead of `Ptr(Char, [Const])`,
+    /// which broke `CString` handling on platforms where their headers omit param names (i.e., `stdio.h`
+    /// on macOS).
+    fn test_unnamed_pointer_parameter_is_not_dropped() {
+        let src = "int puts(const char *); \
+        char *gets(char *); \
+        int fopen(const char *__filename, const char *__mode);";
+
+        let decls = parse_c_header(src).unwrap();
+
+        let puts = decls.functions.iter().find(|f| f.name == "puts").unwrap();
+        assert_eq!(puts.params.len(), 1);
+        assert_eq!(
+            puts.params[0].ty,
+            CType::Ptr(Box::new(CType::Char), vec![CQualifier::Const])
+        );
+
+        let gets = decls.functions.iter().find(|f| f.name == "gets").unwrap();
+        assert_eq!(gets.params.len(), 1);
+        assert_eq!(gets.params[0].ty, CType::Ptr(Box::new(CType::Char), vec![]));
+
+        let fopen = decls.functions.iter().find(|f| f.name == "fopen").unwrap();
+        assert_eq!(
+            fopen.params[0].ty,
+            CType::Ptr(Box::new(CType::Char), vec![CQualifier::Const])
+        );
+        assert_eq!(
+            fopen.params[1].ty,
+            CType::Ptr(Box::new(CType::Char), vec![CQualifier::Const])
+        );
+    }
 }
