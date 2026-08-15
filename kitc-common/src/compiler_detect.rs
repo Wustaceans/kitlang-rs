@@ -101,9 +101,40 @@ pub fn get_system_include_dirs() -> Vec<PathBuf> {
     let mut dirs = get_compiler_info()
         .map(|ci| ci.system_include_dirs.clone())
         .unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    dirs.extend(macos_sdk_include_dirs());
     #[cfg(windows)]
     dirs.extend(msvc::manual_include_dirs());
     dirs
+}
+
+/// Find the active Apple SDK's standard include directories via `xcrun`.
+///
+/// Clang on MacOS can report SDK paths differently depending on whether it was selected through Xcode
+/// or the Command Line Tools.
+///
+/// This logic is logic separate from probing so headers remain discoverable when the compiler
+/// probing output doesn't contain the SDK path.
+#[cfg(target_os = "macos")]
+fn macos_sdk_include_dirs() -> Vec<PathBuf> {
+    let Ok(output) = Command::new("xcrun").args(["--show-sdk-path"]).output() else {
+        return Vec::new();
+    };
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let sdk = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sdk.is_empty() {
+        return Vec::new();
+    }
+
+    let sdk = PathBuf::from(sdk);
+    [sdk.join("usr/include"), sdk.join("usr/include/c++/v1")]
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect()
 }
 
 /// Returns the extra environment variables that must be applied when invoking

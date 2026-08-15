@@ -366,8 +366,8 @@ pub fn register_module_includes(
                 log::warn!("Failed to register builtin header '{}': {e}", header_name);
             }
         } else {
-            log::debug!(
-                "C header '{}' not found on disk and no builtin version available",
+            log::warn!(
+                "C header '{}' not found! Declarations from it will be unavailable",
                 inc.path
             );
         }

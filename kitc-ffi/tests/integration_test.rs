@@ -218,4 +218,24 @@ mod tests {
             CType::Named("div_t".to_string())
         );
     }
+
+    #[test]
+    fn test_macos_div_prototype_with_pure_attribute() {
+        let source = r#"
+            typedef struct {
+                int quot;
+                int rem;
+            } div_t;
+            div_t div(int, int) __attribute__((__pure__));
+        "#;
+
+        let decls = extract_from_preprocessed(source).unwrap();
+        assert_eq!(decls.structs.len(), 1);
+        assert_eq!(decls.functions.len(), 1);
+        assert_eq!(decls.functions[0].name, "div");
+        assert_eq!(
+            decls.functions[0].return_type,
+            CType::Named("div_t".to_string())
+        );
+    }
 }
