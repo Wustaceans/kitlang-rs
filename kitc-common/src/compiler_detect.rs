@@ -97,8 +97,9 @@ pub fn get_compiler_info() -> Option<&'static CompilerInfo> {
 ///
 /// Returns an empty vector if the compiler has not been initialized yet (on a
 /// non-Windows target with no detected compiler).
+#[allow(unused_mut)] // MacOS and Windows targets actually need `dirs` to be mutable
 pub fn get_system_include_dirs() -> Vec<PathBuf> {
-    let dirs = get_compiler_info()
+    let mut dirs = get_compiler_info()
         .map(|ci| ci.system_include_dirs.clone())
         .unwrap_or_default();
     #[cfg(target_os = "macos")]
