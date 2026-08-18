@@ -1,14 +1,8 @@
 # Roadmap
 
-This document outlines the planned development of the Rust-based Kit compiler.
-The project is currently in the **bootstrapping phase**, focusing on a minimal but correct
-compiler pipeline.
+This document outlines the planned development of kitc-rs. The roadmap is organized into *phases*. The features and additions described in these phases are non-exhaustive. Unplanned tasks may arise as more bugs and unexpected issues are encountered.
 
-The roadmap is organized into *phases*, not strict deadlines.
-
-## Phase 0: Core Compiler Infrastructure (current)
-
-Goal: compile a small but valid subset of Kit to C99 and produce a working binary.
+## Initial Phase: Core Compiler Infrastructure
 
 ### Parsing & Representation
 
@@ -17,7 +11,7 @@ Goal: compile a small but valid subset of Kit to C99 and produce a working binar
 
 ### Code Generation (C backend)
 
-Goal: lower a well-defined subset of Kit ("Kit Core") to portable C99.
+**Goal**: Lower a well-defined subset of Kit ("Kit Core") to portable C99.
 
 #### Supported language features (Kit Core)
 
@@ -52,29 +46,6 @@ Goal: lower a well-defined subset of Kit ("Kit Core") to portable C99.
   - [X] Qualified calls across modules
   - [X] Prelude resolution per module path
 
-#### Parsed but not yet code-generated
-
-These constructs are recognized by the parser but are currently dropped before
-code generation (see `codegen/transpile/header.rs`, which zeroes them out). They
-are tracked here so contributors know the gap between "parses" and "compiles".
-
-- [ ] Traits (`trait_def`) — parsed, body discarded
-- [ ] Trait implementations (`trait_impl`) — parsed, placeholder only
-- [ ] Term rewriting / rulesets (`rule` / `rules`) — parsed, never applied
-- [ ] `using` statements (rulesets / implicits) — parsed, never consumed
-- [ ] Generics (type parameters) — syntax parsed and then skipped
-
-#### Explicitly unsupported (for now)
-
-These are features of the original Haskell compiler that are **not** on the
-near-term plan:
-
-- [ ] Generics / monomorphization
-- [ ] Term rewriting (rulesets)
-- [ ] Pattern matching (`match`)
-- [ ] Implicits
-- [ ] Traits / vtables
-
 #### Backend behavior
 
 - [X] Generate valid, readable C99 source code
@@ -89,25 +60,41 @@ near-term plan:
 - [X] Replace panics with meaningful compiler errors
 - [X] Add error location information (line and column)
 - [X] Show a source code snippet for errors
-- [X] Structured internal parser diagnostics (`codegen/parser/diagnostics.rs`)
+- [X] Structured internal parser diagnostics
 
 ### Testing
 
 - [X] Unit testing using examples in `examples/`
+
+## Implementing the other Kit language features
+
+- [ ] Traits (`trait_def`); parsed, body discarded
+- [ ] Trait implementations (`trait_impl`); parsed, placeholder only
+- [ ] Term rewriting / rulesets (`rule` / `rules`); parsed, never applied
+- [ ] `using` statements (rulesets / implicits); parsed, never consumed
+- [ ] Generics (type parameters); syntax parsed and then skipped
+- [ ] Generics / monomorphization
+- [ ] Term rewriting (rulesets)
+- [ ] Pattern matching (`match`)
+- [ ] Implicits
+- [ ] Traits / vtables
+- [ ] Type annotations for macros (see <https://kitlang.dev/examples/#using-c-from-kit>). Handle cases in which C macros do not evaluate an expression that contains a type. In other words, handle cases in which macros generate code instead of evaluating an expression.
+- [ ] Type extension
+- [ ] `box` (marked as TODO in <https://kitlang.dev/examples/#box>)
+- [ ] Other features listed on <https://kitlang.dev/examples> and in the original compiler's grammar definitions
 
 ## Phase 1: Compiler CLI & Developer Experience
 
 Goal: improve usability and feedback during compilation.
 
 - [X] Display elapsed compilation time
-- [ ] Show compilation progress (progress bar or structured stages)
+- [X] Show compilation progress (progress bar or structured stages)
 
 ## Phase 2: Standard Library
 
 Goal: provide a minimal but practical standard library.
 
 - [ ] Use the original Kit stdlib as a starting point, with license and authorship disclaimers
-- [ ] Provide C interoperability where needed
 - [ ] Aim for zero-cost abstractions where possible
 - [ ] Provide a `kit.iterator` module so `for x in iterable` works
 
@@ -128,16 +115,4 @@ Goal: support users and contributors beyond the compiler itself.
 - [X] Provide a landing page with examples and documentation (kitlang.dev)
 - [ ] Compiler-specific documentation (architecture, internals, design decisions; docs.kitlang.dev)
 - [ ] Blog / news section for project updates (optional, future)
-- [ ] Set a Kit Style Guide based on stdlib code and Kit repos (optional, future). More information on this at <https://docs.kitlang.dev/style-guide/>
-
-## Completed Work
-
-These features are already implemented:
-
-- Add linking flags for compatibility with C libraries
-- Replace compiler panics with structured error messages
-- Unit testing via example-based tests
-- Display elapsed compilation time during compilation
-- Structs, enums, typedefs, arrays, ranges, and multi-module imports
-- Error location reporting with source snippets
-- Configurable C compiler flags, library paths, and compiler binary
+- [ ] Write down a Kit Style Guide based on stdlib code and Kit repos (optional, future). More information on this at <https://docs.kitlang.dev/style-guide/>
